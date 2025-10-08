@@ -1,6 +1,4 @@
-langchain
-langchain_core
-langchain_community
-langgraph
-langchain_google_genai
-IPython
+langchain-core==0.3.*
+langgraph==0.2.*
+langchain-google-genai==2.0.*
+python-dotenv
