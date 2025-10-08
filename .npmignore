@@ -4,8 +4,16 @@
 # CDK asset staging directory
 .cdk.staging
 cdk.out
+
+# Local dev
 src/.venv/
-src/app/.env
-src/__pycache__
-src/**/*.pyc
+src/__pycache__/
 src/.pytest_cache/
+src/.env
+src/.DS_Store
+src/**/*.pyc
+
+# Build junk
+__pycache__/
+*.dist-info/
+*.egg-info/
