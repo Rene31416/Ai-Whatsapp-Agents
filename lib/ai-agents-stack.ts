@@ -46,21 +46,25 @@ export class AiAgentsStack extends cdk.Stack {
     //
     // 🧠 Lambda (Python)
     //
+    const aiLayer = new lambda.LayerVersion(this, "AIAgentLayer", {
+      code: lambda.Code.fromAsset(path.join(__dirname, "../src/deps")),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
+      description: "LangChain + Gemini dependencies",
+    });
+
     const agentLambda = new lambda.Function(this, "AiAgentHandler", {
       functionName: "ai-agent-handler",
       runtime: lambda.Runtime.PYTHON_3_12,
-      handler: "app.app.lambda_handler", // 👈 src/app/app.py → def lambda_handler()
-      code: lambda.Code.fromAsset(path.join(__dirname, "../src")),
+      handler: "app.app.lambda_handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../src/app")),
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
-      environmentEncryption: dataKey,
       environment: {
         TENANT_TABLE: tenantTable.tableName,
         CHAT_TABLE: chatTable.tableName,
-
-        // 👇 Add this so Python knows where to find your deps and app modules
-        PYTHONPATH: "/var/task/deps:/var/task/app",
+        PYTHONPATH: "/opt/python:/var/task/app", // <- tells Lambda where to find deps
       },
+      layers: [aiLayer],
     });
 
     //
