@@ -1,14 +1,103 @@
-*.js
-!jest.config.js
-*.d.ts
-node_modules
+# =====================
+#  OS / Editor Files
+# =====================
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.code-workspace
 
-# CDK asset staging directory
-.cdk.staging
-cdk.out
-src/.venv/
-src/app/.env
-src/__pycache__
-src/**/*.pyc
-src/.pytest_cache/
-src/deps
+# =====================
+#  Python
+# =====================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+*.log
+*.tmp
+.pytest_cache/
+*.coverage
+htmlcov/
+.mypy_cache/
+.coverage
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Local Python packages
+deps/
+build/
+dist/
+
+# =====================
+#  Node / CDK
+# =====================
+node_modules/
+cdk.out/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+
+# CDK context and synthesized templates
+cdk.context.json
+*.asset-manifest.json
+*.template.json
+
+# =====================
+#  Environment / Secrets
+# =====================
+.env
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.json
+secrets.json
+
+# =====================
+#  OS cache / Logs
+# =====================
+*.log
+*.bak
+*.old
+*.tmp
+*.cache/
+.cache/
+
+# =====================
+#  IDE metadata
+# =====================
+*.iml
+*.sublime-workspace
+*.sublime-project
+
+# =====================
+#  Docker (for DockerImageFunction)
+# =====================
+*.tar
+*.tar.gz
+*.zip
+*.gz
+.dockerignore
+Dockerfile
+
+# =====================
+#  Misc
+# =====================
+# Keep only source code and configs
+!src/
+!cdk/
+!requirements.txt
+!README.md
+!package.json
+!tsconfig.json
+!bin/
