@@ -46,25 +46,35 @@ export class AiAgentsStack extends cdk.Stack {
     //
     // 🧠 Lambda (Python)
     //
-    const aiLayer = new lambda.LayerVersion(this, "AIAgentLayer", {
-      code: lambda.Code.fromAsset(path.join(__dirname, "../src/deps")),
+
+    // ✅ Create a Lambda Layer for dependencies
+    const depsLayer = new lambda.LayerVersion(this, "DepsLayer", {
+      code: lambda.Code.fromAsset(path.join(process.cwd(), "layer")),
       compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
-      description: "LangChain + Gemini dependencies",
+      description: "LangChain + Google GenAI dependencies",
     });
 
-    const agentLambda = new lambda.Function(this, "AiAgentHandler", {
-      functionName: "ai-agent-handler",
+    // ✅ Main Lambda (lightweight now)
+    const agentLambda = new lambda.Function(this, "AiAgentsFunction", {
       runtime: lambda.Runtime.PYTHON_3_12,
+      architecture: lambda.Architecture.ARM_64,
       handler: "app.app.lambda_handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "../src/app")),
+      code: lambda.Code.fromAsset(path.join(process.cwd(), "src"), {
+        bundling: {
+          image: lambda.Runtime.PYTHON_3_12.bundlingImage,
+          command: [
+            "bash",
+            "-c",
+            [
+              "cp -r app /asset-output/",
+              "cp app/clinic_context.json /asset-output/app/",
+            ].join(" && "),
+          ],
+        },
+      }),
+      layers: [depsLayer],
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
-      environment: {
-        TENANT_TABLE: tenantTable.tableName,
-        CHAT_TABLE: chatTable.tableName,
-        PYTHONPATH: "/opt/python:/var/task/app", // <- tells Lambda where to find deps
-      },
-      layers: [aiLayer],
     });
 
     //
