@@ -29,7 +29,7 @@ htmlcov/
 # Virtual environments
 .venv/
 venv/
-env/
+env/ 
 ENV/
 
 # Local Python packages
