@@ -1,0 +1,23 @@
+__start__([<p>__start__</p>]):::first
+        summarize_memory(summarize_memory)
+        categorize(categorize)
+        formulate_final_answer_schedule(formulate_final_answer_schedule)
+        formulate_final_answer_info(formulate_final_answer_info)
+        formulate_final_answer_smalltalk(formulate_final_answer_smalltalk)
+        formulate_final_answer_low_confidence(formulate_final_answer_low_confidence)
+        routing(routing)
+        __end__([<p>__end__</p>]):::last
+        __start__ --> summarize_memory;
+        categorize --> routing;
+        formulate_final_answer_info --> __end__;
+        formulate_final_answer_low_confidence --> __end__;
+        formulate_final_answer_schedule --> __end__;
+        formulate_final_answer_smalltalk --> __end__;
+        summarize_memory --> categorize;
+        routing -. &nbsp;schedule&nbsp; .-> formulate_final_answer_schedule;
+        routing -. &nbsp;info&nbsp; .-> formulate_final_answer_info;
+        routing -. &nbsp;smalltalk&nbsp; .-> formulate_final_answer_smalltalk;
+        routing -. &nbsp;low&nbsp; .-> formulate_final_answer_low_confidence;
+        classDef default fill:#f2f0ff,line-height:1.2;
+        classDef first fill-opacity:0;
+        classDef last fill:#bfb6fc;
