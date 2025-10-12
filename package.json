@@ -5,10 +5,10 @@
     "ai-agents": "bin/ai-agents.js"
   },
   "scripts": {
-   "build": "esbuild src/app/handler.ts --bundle --platform=node --target=node20 --outdir=dist --external:aws-sdk",
-   "watch": "esbuild src/app/handler.ts --bundle --platform=node --target=node20 --outdir=dist --watch --external:aws-sdk ",
-   "start": "ts-node src/app/main.ts",
-   "test": "jest",
+    "build": "esbuild src/app/handler.ts --bundle --platform=node --target=node20 --outdir=dist --external:aws-sdk",
+    "watch": "esbuild src/app/handler.ts --bundle --platform=node --target=node20 --outdir=dist --watch --external:aws-sdk ",
+    "start": "ts-node src/app/main.ts",
+    "test": "jest",
     "cdk": "cdk deploy"
   },
   "devDependencies": {
@@ -23,12 +23,14 @@
     "typescript": "~5.6.3"
   },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.908.0",
     "@aws-sdk/client-secrets-manager": "^3.906.0",
     "@google/generative-ai": "^0.24.1",
     "@langchain/core": "^0.3.0",
     "@langchain/google-genai": "^0.2.18",
     "@langchain/langgraph": "^0.4.9",
     "aws-cdk-lib": "2.181.1",
+    "axios": "^1.12.2",
     "constructs": "^10.0.0",
     "inversify": "^7.7.1",
     "langchain": "^0.3.0",
