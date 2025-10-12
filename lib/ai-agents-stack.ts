@@ -5,6 +5,7 @@ import * as kms from "aws-cdk-lib/aws-kms";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as iam from "aws-cdk-lib/aws-iam";
 import * as path from "path";
 
 export class AiAgentsStack extends cdk.Stack {
@@ -21,7 +22,7 @@ export class AiAgentsStack extends cdk.Stack {
     });
 
     //
-    // 🧩 Secrets Manager (Gemini API Key)
+    // 🧩 Secrets
     //
     const geminiSecret = new secretsmanager.Secret(this, "GeminiApiKeySecret", {
       secretName: "GeminiApiKey",
@@ -29,8 +30,10 @@ export class AiAgentsStack extends cdk.Stack {
       encryptionKey: dataKey,
     });
 
+    const whatsAppSecretArn = `arn:aws:secretsmanager:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:secret:WhatsappCredentials-`;
+
     //
-    // 🏢 DynamoDB Tables
+    // 🏢 DynamoDB
     //
     const tenantTable = new dynamodb.Table(this, "TenantClinicMetadata", {
       tableName: "TenantClinicMetadata",
@@ -39,6 +42,15 @@ export class AiAgentsStack extends cdk.Stack {
       encryptionKey: dataKey,
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    tenantTable.addGlobalSecondaryIndex({
+      indexName: "PhoneNumberIdIndex",
+      partitionKey: {
+        name: "phoneNumberId",
+        type: dynamodb.AttributeType.STRING,
+      },
+      projectionType: dynamodb.ProjectionType.ALL,
     });
 
     const chatTable = new dynamodb.Table(this, "ChatSessions", {
@@ -52,7 +64,7 @@ export class AiAgentsStack extends cdk.Stack {
     });
 
     //
-    // 💬 Lambda (TypeScript build)
+    // 💬 Lambda
     //
     const agentLambda = new lambda.Function(this, "DentalChatLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
@@ -63,10 +75,27 @@ export class AiAgentsStack extends cdk.Stack {
       memorySize: 512,
       environment: {
         GEMINI_SECRET_ARN: geminiSecret.secretArn,
+        WHATSAPP_SECRET_ARN: whatsAppSecretArn,
       },
     });
 
+    // Grant existing secrets explicitly
     geminiSecret.grantRead(agentLambda);
+
+    // ✅ Grant access to any future tenant-specific secrets
+    agentLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [
+          `${whatsAppSecretArn}*`,
+          `arn:aws:secretsmanager:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:secret:GeminiApiKey-*`,
+        ],
+      })
+    );
 
     //
     // 🌐 API Gateway
@@ -74,23 +103,28 @@ export class AiAgentsStack extends cdk.Stack {
     const api = new apigateway.LambdaRestApi(this, "DentalChatApi", {
       handler: agentLambda,
       proxy: false,
-      restApiName: "Dental Chat API",
-      description: "API for the Opal dental assistant chatbot",
+      restApiName: "Agents API",
+      description: "API for the assistants chatbot",
     });
 
-    const chat = api.root.addResource("chat");
-    chat.addMethod("POST");
+    const webhook = api.root.addResource("webhook");
+    webhook.addMethod("GET", new apigateway.LambdaIntegration(agentLambda));
+    webhook.addMethod("POST", new apigateway.LambdaIntegration(agentLambda));
 
     //
-    // ✅ Grant permissions
+    // Dynamo grants
     //
     tenantTable.grantReadData(agentLambda);
     chatTable.grantReadWriteData(agentLambda);
     dataKey.grantEncryptDecrypt(agentLambda);
 
     //
-    // 💬 Outputs
+    // Outputs
     //
     new cdk.CfnOutput(this, "ApiEndpoint", { value: api.url });
+    new cdk.CfnOutput(this, "WebhookUrl", {
+      value: `${api.url}webhook`,
+      description: "Public WhatsApp webhook endpoint for Meta verification",
+    });
   }
 }
