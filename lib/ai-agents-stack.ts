@@ -27,7 +27,7 @@ export class AiAgentsStack extends cdk.Stack {
     });
     const whatsAppSecretArn = `arn:aws:secretsmanager:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:secret:WhatsappCredentials-`;
 
-    // 🏢 DynamoDB
+    // 🏢 DynamoDB tables
     const tenantTable = new dynamodb.Table(this, "TenantClinicMetadata", {
       partitionKey: { name: "tenantId", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -35,6 +35,16 @@ export class AiAgentsStack extends cdk.Stack {
       encryptionKey: dataKey,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+
+    tenantTable.addGlobalSecondaryIndex({
+      indexName: "PhoneNumberIdIndex",
+      partitionKey: {
+        name: "phoneNumberId",
+        type: dynamodb.AttributeType.STRING,
+      },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     const chatTable = new dynamodb.Table(this, "ChatSessions", {
       partitionKey: { name: "PK", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
@@ -44,25 +54,31 @@ export class AiAgentsStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // 📬 SQS Queues
-    // 📬 Incoming message buffer (must stay FIFO)
-    const chatBufferQueue = new sqs.Queue(this, "ChatBufferQueue", {
-      fifo: true,
-      queueName: "chat-buffer.fifo",
-      contentBasedDeduplication: true,
+    // 🧩 Message buffer table
+    const chatBufferTable = new dynamodb.Table(this, "ChatMessageBuffer", {
+      partitionKey: { name: "UserKey", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dataKey,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // 🤖 Outgoing grouped messages (standard queue)
-    const chatServiceQueue = new sqs.Queue(this, "ChatServiceQueue", {
-      queueName: "chat-service",
+    // 📬 SQS Queues
+    const chatBufferQueue = new sqs.Queue(this, "ChatBufferQueue", {
+      queueName: "chat-buffer-queue",
       visibilityTimeout: cdk.Duration.seconds(60),
     });
 
-    // 🌐 Webhook Lambda (controller)
+    const chatServiceQueue = new sqs.Queue(this, "ChatServiceQueue", {
+      queueName: "chat-service-queue",
+      visibilityTimeout: cdk.Duration.seconds(60),
+    });
+
+    // 🌐 Webhook Lambda
     const webhookLambda = new lambda.Function(this, "WebhookLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
-      handler: "handler.handler",
+      handler: "webhook.handler",
       code: lambda.Code.fromAsset(path.join(__dirname, "../dist")),
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
@@ -73,9 +89,11 @@ export class AiAgentsStack extends cdk.Stack {
       },
     });
 
-    // permissions for webhook
     chatBufferQueue.grantSendMessages(webhookLambda);
     geminiSecret.grantRead(webhookLambda);
+    tenantTable.grantReadData(webhookLambda);
+    chatTable.grantReadWriteData(webhookLambda);
+    dataKey.grantEncryptDecrypt(webhookLambda);
     webhookLambda.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
@@ -85,28 +103,26 @@ export class AiAgentsStack extends cdk.Stack {
         resources: [`${whatsAppSecretArn}*`],
       })
     );
-    tenantTable.grantReadData(webhookLambda);
-    chatTable.grantReadWriteData(webhookLambda);
-    dataKey.grantEncryptDecrypt(webhookLambda);
 
     // 🔄 Aggregator Lambda
     const aggregatorLambda = new lambda.Function(this, "AggregatorLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
-      handler: "aggregator.handler",
+      handler: "agregator.handler",
       code: lambda.Code.fromAsset(path.join(__dirname, "../dist")),
       timeout: cdk.Duration.seconds(60),
       memorySize: 512,
       environment: {
         CHAT_SERVICE_QUEUE_URL: chatServiceQueue.queueUrl,
+        CHAT_BUFFER_TABLE_NAME: chatBufferTable.tableName,
       },
     });
+
     aggregatorLambda.addEventSource(
-      new SqsEventSource(chatBufferQueue, {
-        batchSize: 10, // ✅ fine for FIFO
-      })
+      new SqsEventSource(chatBufferQueue, { batchSize: 10 })
     );
 
+    chatBufferTable.grantReadWriteData(aggregatorLambda);
     chatServiceQueue.grantSendMessages(aggregatorLambda);
 
     // 🤖 ChatService Lambda
@@ -120,23 +136,56 @@ export class AiAgentsStack extends cdk.Stack {
       environment: {
         GEMINI_SECRET_ARN: geminiSecret.secretArn,
         WHATSAPP_SECRET_ARN: whatsAppSecretArn,
+        CHAT_BUFFER_TABLE_NAME: chatBufferTable.tableName,
       },
     });
-    chatServiceLambda.addEventSource(
-      new SqsEventSource(chatServiceQueue, {
-        batchSize: 1, // one grouped conversation per run
+
+    // ✅ Explicit and precise DynamoDB GSI permissions (final fix)
+    chatServiceLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: ["dynamodb:Query"],
+        resources: [
+          `arn:aws:dynamodb:${this.region}:${this.account}:table/${tenantTable.tableName}/index/PhoneNumberIdIndex`,
+        ],
       })
     );
-    geminiSecret.grantRead(chatServiceLambda);
-    chatTable.grantReadWriteData(chatServiceLambda);
+
+    // Allow table reads and writes for other operations
     tenantTable.grantReadData(chatServiceLambda);
+    chatBufferTable.grantReadWriteData(chatServiceLambda);
+    chatTable.grantReadWriteData(chatServiceLambda);
+    geminiSecret.grantRead(chatServiceLambda);
     dataKey.grantEncryptDecrypt(chatServiceLambda);
 
-    // 🌐 API Gateway -> Webhook Lambda
+    // after chatServiceLambda is created
+    const tenantGsiArn = `${tenantTable.tableArn}/index/PhoneNumberIdIndex`;
+
+    chatServiceLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          "dynamodb:Query",
+          "dynamodb:DescribeTable",
+          "dynamodb:ListTagsOfResource",
+        ],
+        resources: [
+          tenantTable.tableArn, // allow table-level auth path
+          tenantGsiArn, // allow exact GSI ARN that DDB evaluates
+        ],
+      })
+    );
+
+    chatServiceLambda.addEventSource(
+      new SqsEventSource(chatServiceQueue, { batchSize: 1 })
+    );
+
+    // 🌐 API Gateway
     const api = new apigateway.LambdaRestApi(this, "AgentsApi", {
       handler: webhookLambda,
       proxy: false,
     });
+
     const webhook = api.root.addResource("webhook");
     webhook.addMethod("GET", new apigateway.LambdaIntegration(webhookLambda));
     webhook.addMethod("POST", new apigateway.LambdaIntegration(webhookLambda));
