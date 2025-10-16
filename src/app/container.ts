@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { Container } from "inversify";
-import { ChatService } from "./lambda-handlers/chatService.handler";
+import { ChatService } from "../chat/chat.service";
 import { DentalWorkflow } from "../chat/dental.workflow";
 import { WhatsappController } from "../controller/chat.controller";
 import { ChatRepository } from "../chat/chat.repository";
