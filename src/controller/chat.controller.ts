@@ -6,9 +6,12 @@ import {
   body,
   queryParam,
 } from "ts-lambda-api";
-import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import {
+  DynamoDBClient,
+  PutItemCommand,
+} from "@aws-sdk/client-dynamodb";
 
-const sqs = new SQSClient({});
+const ddb = new DynamoDBClient({});
 
 @apiController("/webhook")
 export class WhatsappController extends Controller {
@@ -33,7 +36,7 @@ export class WhatsappController extends Controller {
     return { statusCode: 403, body: { detail: "Forbidden" } };
   }
 
-  // 📬 POST /webhook — minimal validation + enqueue to SQS
+  // 📬 POST /webhook — minimal validation + store message in DynamoDB buffer
   @POST("/")
   async receiveWebhook(@body body: any) {
     console.log("📩 Incoming webhook body:", JSON.stringify(body, null, 2));
@@ -72,15 +75,23 @@ export class WhatsappController extends Controller {
         timestamp: Date.now(),
       };
 
-      await sqs.send(
-        new SendMessageCommand({
-          QueueUrl: process.env.CHAT_BUFFER_QUEUE_URL!,
-          MessageBody: JSON.stringify(payload),
+      // ✅ Write directly to DynamoDB (ChatMessageBuffer)
+      const tableName = process.env.CHAT_BUFFER_TABLE_NAME!;
+      await ddb.send(
+        new PutItemCommand({
+          TableName: tableName,
+          Item: {
+            UserKey: { S: from },
+            MessageId: { S: messageId },
+            PhoneNumberId: { S: phoneNumberId },
+            Text: { S: text },
+            Timestamp: { N: `${payload.timestamp}` },
+          },
         })
       );
 
-      console.log(`✅ Enqueued message ${messageId} for ${from}`);
-      return { status: "ok", enqueued: true };
+      console.log(`✅ Stored message ${messageId} for ${from}`);
+      return { status: "ok", stored: true };
     } catch (err: any) {
       console.error("❌ Webhook error:", err);
       return { statusCode: 500, body: { detail: "Internal server error" } };
