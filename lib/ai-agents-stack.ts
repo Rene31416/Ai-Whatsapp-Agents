@@ -2,9 +2,9 @@ import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as apigateway from "aws-cdk-lib/aws-apigateway";
-import * as sqs from "aws-cdk-lib/aws-sqs";
 import * as iam from "aws-cdk-lib/aws-iam";
-import { SqsEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import { DynamoEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import { StartingPosition } from "aws-cdk-lib/aws-lambda";
 import * as path from "path";
 import * as kms from "aws-cdk-lib/aws-kms";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
@@ -54,24 +54,14 @@ export class AiAgentsStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
-    // 🧩 Message buffer table
+    // 🧩 Message buffer table (now with stream)
     const chatBufferTable = new dynamodb.Table(this, "ChatMessageBuffer", {
       partitionKey: { name: "UserKey", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dataKey,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-    });
-
-    // 📬 SQS Queues
-    const chatBufferQueue = new sqs.Queue(this, "ChatBufferQueue", {
-      queueName: "chat-buffer-queue",
-      visibilityTimeout: cdk.Duration.seconds(60),
-    });
-
-    const chatServiceQueue = new sqs.Queue(this, "ChatServiceQueue", {
-      queueName: "chat-service-queue",
-      visibilityTimeout: cdk.Duration.seconds(60),
+      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES, // 🔥 enable stream
     });
 
     // 🌐 Webhook Lambda
@@ -83,16 +73,16 @@ export class AiAgentsStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(30),
       memorySize: 512,
       environment: {
-        CHAT_BUFFER_QUEUE_URL: chatBufferQueue.queueUrl,
+        CHAT_BUFFER_TABLE_NAME: chatBufferTable.tableName, // ✅ updated
         GEMINI_SECRET_ARN: geminiSecret.secretArn,
         WHATSAPP_SECRET_ARN: whatsAppSecretArn,
       },
     });
 
-    chatBufferQueue.grantSendMessages(webhookLambda);
     geminiSecret.grantRead(webhookLambda);
     tenantTable.grantReadData(webhookLambda);
     chatTable.grantReadWriteData(webhookLambda);
+    chatBufferTable.grantReadWriteData(webhookLambda);
     dataKey.grantEncryptDecrypt(webhookLambda);
     webhookLambda.addToRolePolicy(
       new iam.PolicyStatement({
@@ -103,27 +93,6 @@ export class AiAgentsStack extends cdk.Stack {
         resources: [`${whatsAppSecretArn}*`],
       })
     );
-
-    // 🔄 Aggregator Lambda
-    const aggregatorLambda = new lambda.Function(this, "AggregatorLambda", {
-      runtime: lambda.Runtime.NODEJS_20_X,
-      architecture: lambda.Architecture.ARM_64,
-      handler: "agregator.handler",
-      code: lambda.Code.fromAsset(path.join(__dirname, "../dist")),
-      timeout: cdk.Duration.seconds(60),
-      memorySize: 512,
-      environment: {
-        CHAT_SERVICE_QUEUE_URL: chatServiceQueue.queueUrl,
-        CHAT_BUFFER_TABLE_NAME: chatBufferTable.tableName,
-      },
-    });
-
-    aggregatorLambda.addEventSource(
-      new SqsEventSource(chatBufferQueue, { batchSize: 10 })
-    );
-
-    chatBufferTable.grantReadWriteData(aggregatorLambda);
-    chatServiceQueue.grantSendMessages(aggregatorLambda);
 
     // 🤖 ChatService Lambda
     const chatServiceLambda = new lambda.Function(this, "ChatServiceLambda", {
@@ -140,7 +109,7 @@ export class AiAgentsStack extends cdk.Stack {
       },
     });
 
-    // ✅ Explicit and precise DynamoDB GSI permissions (final fix)
+    // ✅ GSI permissions for tenant lookup
     chatServiceLambda.addToRolePolicy(
       new iam.PolicyStatement({
         effect: iam.Effect.ALLOW,
@@ -151,14 +120,12 @@ export class AiAgentsStack extends cdk.Stack {
       })
     );
 
-    // Allow table reads and writes for other operations
     tenantTable.grantReadData(chatServiceLambda);
     chatBufferTable.grantReadWriteData(chatServiceLambda);
     chatTable.grantReadWriteData(chatServiceLambda);
     geminiSecret.grantRead(chatServiceLambda);
     dataKey.grantEncryptDecrypt(chatServiceLambda);
 
-    // after chatServiceLambda is created
     const tenantGsiArn = `${tenantTable.tableArn}/index/PhoneNumberIdIndex`;
 
     chatServiceLambda.addToRolePolicy(
@@ -169,15 +136,17 @@ export class AiAgentsStack extends cdk.Stack {
           "dynamodb:DescribeTable",
           "dynamodb:ListTagsOfResource",
         ],
-        resources: [
-          tenantTable.tableArn, // allow table-level auth path
-          tenantGsiArn, // allow exact GSI ARN that DDB evaluates
-        ],
+        resources: [tenantTable.tableArn, tenantGsiArn],
       })
     );
 
+    // 🔄 Stream trigger for ChatService
     chatServiceLambda.addEventSource(
-      new SqsEventSource(chatServiceQueue, { batchSize: 1 })
+      new DynamoEventSource(chatBufferTable, {
+        startingPosition: StartingPosition.LATEST,
+        batchSize: 100,
+        enabled: true,
+      })
     );
 
     // 🌐 API Gateway
