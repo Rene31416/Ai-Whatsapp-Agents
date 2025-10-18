@@ -5,8 +5,9 @@
     "ai-agents": "bin/ai-agents.js"
   },
   "scripts": {
-    "build": "esbuild src/app/lambda-handlers/webhook.ts src/app/lambda-handlers/agregator.ts src/app/lambda-handlers/chatService.ts --bundle --platform=node --target=node20 --outdir=dist --external:aws-sdk",
-    "watch": "esbuild src/app/lambda-handlers/webhook.ts src/app/lambda-handlers/agregator.ts src/app/lambda-handlers/chatService.ts --bundle --platform=node --target=node20 --outdir=dist --watch --external:aws-sdk",
+    "clean": "rm -rf dist",
+    "build": "npm run clean && esbuild src/app/lambda-handlers/*.ts --bundle --platform=node --target=node20 --outdir=dist --external:aws-sdk",
+    "watch": "esbuild src/app/lambda-handlers/*.ts --bundle --platform=node --target=node20 --outdir=dist --watch --external:aws-sdk",
     "start": "ts-node src/app/main.ts",
     "test": "jest",
     "cdk": "cdk deploy"
@@ -24,6 +25,7 @@
   },
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.908.0",
+    "@aws-sdk/client-scheduler": "^3.911.0",
     "@aws-sdk/client-secrets-manager": "^3.906.0",
     "@aws-sdk/client-sqs": "^3.908.0",
     "@google/generative-ai": "^0.24.1",
