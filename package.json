@@ -28,6 +28,7 @@
     "@aws-sdk/client-scheduler": "^3.911.0",
     "@aws-sdk/client-secrets-manager": "^3.906.0",
     "@aws-sdk/client-sqs": "^3.908.0",
+    "@aws-sdk/util-dynamodb": "^3.913.0",
     "@google/generative-ai": "^0.24.1",
     "@langchain/core": "^0.3.0",
     "@langchain/google-genai": "^0.2.18",
