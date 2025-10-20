@@ -54,43 +54,46 @@ export class AiAgentsStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    // 💬 Buffer table (Streams/TTL removed to avoid noise)
     const chatBufferTable = new dynamodb.Table(this, "ChatMessageBuffer", {
       partitionKey: { name: "UserKey", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dataKey,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
-      // You can keep the stream, but it's no longer used by ChatService.
-      stream: dynamodb.StreamViewType.NEW_AND_OLD_IMAGES,
+      // ⛔ no stream
+      // ⛔ no TTL configuration
     });
 
-    // // (Optional) DLQs
-    // const ingressDlq = new sqs.Queue(this, "ChatIngressDLQ", {
-    //   retentionPeriod: cdk.Duration.days(14),
-    // });
-    // const flushDlq = new sqs.Queue(this, "FlushOutputDLQ", {
-    //   retentionPeriod: cdk.Duration.days(14),
-    // });
+    // 📨 Queues
     const chatIngressDlq = new sqs.Queue(this, "ChatIngressDLQ", {
       retentionPeriod: cdk.Duration.days(14),
     });
-    // 📨 SQS Queues (visibility > lambda timeout of 60s)
+
     const chatIngressQueue = new sqs.Queue(this, "ChatIngressQueue", {
       visibilityTimeout: cdk.Duration.seconds(120),
       deadLetterQueue: {
         queue: chatIngressDlq,
-        maxReceiveCount: 1, // 🚨 move to DLQ after first failure
+        maxReceiveCount: 1,
       },
-      // deadLetterQueue: { maxReceiveCount: 5, queue: ingressDlq },
     });
 
+    // ✅ Flush ticket queue (per-message delay set by Aggregator)
+    const flushTicketQueue = new sqs.Queue(this, "FlushTicketQueue", {
+      visibilityTimeout: cdk.Duration.seconds(120),
+      deadLetterQueue: {
+        queue: chatIngressDlq,
+        maxReceiveCount: 1,
+      },
+    });
+
+    // Outbound queue consumed by ChatService
     const flushOutputQueue = new sqs.Queue(this, "FlushOutputQueue", {
       visibilityTimeout: cdk.Duration.seconds(120),
       deadLetterQueue: {
         queue: chatIngressDlq,
-        maxReceiveCount: 1, // 🚨 move to DLQ after first failure
+        maxReceiveCount: 1,
       },
-      // deadLetterQueue: { maxReceiveCount: 5, queue: flushDlq },
     });
 
     // 🌐 Webhook Lambda
@@ -118,15 +121,12 @@ export class AiAgentsStack extends cdk.Stack {
 
     webhookLambda.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret",
-        ],
+        actions: ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
         resources: [`${whatsAppSecretArn}*`],
       })
     );
 
-    // 🧩 Aggregator Lambda
+    // 🧩 Aggregator Lambda (buffers + emits "flush ticket" with delay)
     const aggregatorLambda = new lambda.Function(this, "AggregatorLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
@@ -137,10 +137,11 @@ export class AiAgentsStack extends cdk.Stack {
       environment: {
         CHAT_BUFFER_TABLE_NAME: chatBufferTable.tableName,
         CHAT_INGRESS_QUEUE_URL: chatIngressQueue.queueUrl,
+        FLUSH_TICKET_QUEUE_URL: flushTicketQueue.queueUrl,
+        DEBOUNCE_SECONDS: "8",
       },
     });
 
-    // Using raw mapping → grant consume explicitly (you did ✅)
     aggregatorLambda.addEventSourceMapping("IngressQueueMapping", {
       eventSourceArn: chatIngressQueue.queueArn,
       batchSize: 10,
@@ -148,21 +149,9 @@ export class AiAgentsStack extends cdk.Stack {
     chatIngressQueue.grantConsumeMessages(aggregatorLambda);
     chatBufferTable.grantReadWriteData(aggregatorLambda);
     dataKey.grantEncryptDecrypt(aggregatorLambda);
+    flushTicketQueue.grantSendMessages(aggregatorLambda);
 
-    // Prefer least-privilege over "scheduler:*"
-    aggregatorLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: [
-          "scheduler:CreateSchedule",
-          "scheduler:UpdateSchedule",
-          "scheduler:GetSchedule",
-          "scheduler:DeleteSchedule",
-        ],
-        resources: ["*"],
-      })
-    );
-
-    // 🧠 Flush Lambda
+    // 🧠 Flush Lambda (triggered by FlushTicketQueue)
     const flushLambda = new lambda.Function(this, "FlushLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
@@ -176,11 +165,17 @@ export class AiAgentsStack extends cdk.Stack {
       },
     });
 
+    flushLambda.addEventSource(
+      new SqsEventSource(flushTicketQueue, {
+        batchSize: 1,
+      })
+    );
+
     chatBufferTable.grantReadWriteData(flushLambda);
     flushOutputQueue.grantSendMessages(flushLambda);
     dataKey.grantEncryptDecrypt(flushLambda);
 
-    // 🤖 ChatService Lambda (consumes from SQS)
+    // 🤖 ChatService Lambda (consumes FlushOutputQueue)
     const chatServiceLambda = new lambda.Function(this, "ChatServiceLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
@@ -204,15 +199,13 @@ export class AiAgentsStack extends cdk.Stack {
     geminiSecret.grantRead(chatServiceLambda);
     dataKey.grantEncryptDecrypt(chatServiceLambda);
 
-    // Ensure ChatService can Query the GSI explicitly
     chatServiceLambda.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["dynamodb:Query"],
-        resources: [`${tenantTable.tableArn}/index/*`], // covers PhoneNumberIdIndex
+        resources: [`${tenantTable.tableArn}/index/*`],
       })
     );
 
-    // (Optional) If your repo calls DescribeTable, add this too:
     chatServiceLambda.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["dynamodb:DescribeTable"],
@@ -225,50 +218,18 @@ export class AiAgentsStack extends cdk.Stack {
         batchSize: 1,
       })
     );
+
     chatServiceLambda.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ["dynamodb:Query"],
         resources: [chatTable.tableArn, `${chatTable.tableArn}/index/*`],
       })
     );
+
     chatServiceLambda.addToRolePolicy(
-  new iam.PolicyStatement({
-    actions: [
-      "secretsmanager:GetSecretValue",
-      "secretsmanager:DescribeSecret",
-    ],
-    resources: [`${whatsAppSecretArn}*`], // ✅ allow all tenant-specific WhatsApp secrets
-  })
-);
-
-
-    // SqsEventSource automatically grants SQS receive/delete permissions to the Lambda role ✅
-
-    // 🕒 IAM Role for EventBridge Scheduler
-    const schedulerRole = new iam.Role(this, "SchedulerInvokeRole", {
-      assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
-    });
-
-    schedulerRole.addToPolicy(
       new iam.PolicyStatement({
-        actions: ["lambda:InvokeFunction"],
-        resources: [flushLambda.functionArn],
-      })
-    );
-
-    aggregatorLambda.addEnvironment(
-      "FLUSH_LAMBDA_ARN",
-      flushLambda.functionArn
-    );
-    aggregatorLambda.addEnvironment(
-      "SCHEDULER_ROLE_ARN",
-      schedulerRole.roleArn
-    );
-
-    aggregatorLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["iam:PassRole"],
-        resources: [schedulerRole.roleArn],
+        actions: ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+        resources: [`${whatsAppSecretArn}*`],
       })
     );
 
