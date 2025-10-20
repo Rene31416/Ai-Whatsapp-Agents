@@ -4,7 +4,7 @@ import { injectable } from "inversify";
 @injectable()
 export class ChatRepository {
   private client = new DynamoDBClient({});
-  private tableName = "ChatSessions";
+  private tableName = process.env.CHAT_SESSIONS_TABLE_NAME!; // ✅ use env var injected by CDK
 
   async saveMessage(tenantId: string, userId: string, role: "user" | "agent", message: string) {
     const timestamp = new Date().toISOString();
@@ -34,7 +34,7 @@ export class ChatRepository {
         TableName: this.tableName,
         KeyConditionExpression: "PK = :pk",
         ExpressionAttributeValues: { ":pk": { S: PK } },
-        ScanIndexForward: false,
+        ScanIndexForward: false, // newest first
         Limit: limit,
       })
     );
