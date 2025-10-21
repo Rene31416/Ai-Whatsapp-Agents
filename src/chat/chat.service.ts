@@ -1,124 +1,247 @@
+// chat.service.ts
 import { inject, injectable } from "inversify";
 import { SQSRecord } from "aws-lambda";
-import {
-  DynamoDBClient,
-  GetItemCommand,
-  DeleteItemCommand,
-} from "@aws-sdk/client-dynamodb";
-import { DentalWorkflow } from "./dental.workflow";
+import { DynamoDBClient, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
 import { ChatRepository } from "./chat.repository";
-import { TenantRepository } from "./tenant.repository";
 import { getWhatsappSecrets, sendWhatsappText } from "./models";
-import { State } from "./models";
+import { DentalWorkflow } from "./dental.workflow";
+import { MemoryRepository } from "./memory.repository";
+import { summarizeMemoryTurn } from "../prompts/dental-prompts";
 
 const ddb = new DynamoDBClient({});
+const wf = new DentalWorkflow();
+
+function trunc(s: string, n = 140) {
+  if (!s) return "";
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > n ? `${t.slice(0, n)}…` : t;
+}
+
+function timeout(ms: number, label = "timeout"): Promise<never> {
+  return new Promise((_, reject) => {
+    setTimeout(() => reject(new Error(label)), ms);
+  });
+}
 
 @injectable()
 export class ChatService {
   constructor(
-    @inject(DentalWorkflow)
-    private readonly dentalWorkflow: DentalWorkflow,
     @inject(ChatRepository)
     private readonly chatRepository: ChatRepository,
-    @inject(TenantRepository)
-    private readonly tenantRepository: TenantRepository
+    @inject(MemoryRepository)
+    private readonly memoryRepository: MemoryRepository
   ) {}
 
-  /**
-   * Handle a complete buffered chat turn
-   * Invoked by delayed SQS message from Aggregator Lambda
-   */
   async handleRecord(record: SQSRecord): Promise<void> {
+    const reqId =
+      (record as any)?.awsRequestId ||
+      (global as any).crypto?.randomUUID?.() ||
+      "req";
+    console.info("▶️ ChatService.handleRecord:start", {
+      reqId,
+      region: process.env.AWS_REGION,
+      memoryTable: process.env.MEMORY_TABLE_NAME || "(unset)",
+      bufferTable: process.env.CHAT_BUFFER_TABLE_NAME || "(unset)",
+      chatTable: process.env.CHAT_SESSIONS_TABLE_NAME || "(unset)",
+    });
+
     try {
-      const { tenantId, userId } = JSON.parse(record.body);
-      const userKey = `${tenantId}#${userId}`;
+      // ---- Parse body and normalize messages ----
+      const bodyRaw = record.body;
+      console.info("📦 SQS body (raw, len):", bodyRaw?.length ?? 0);
 
-      console.log(`💬 Processing buffered conversation for ${userKey}`);
+      const body = JSON.parse(bodyRaw);
+      const tenantId: string = body.tenantId;
+      const userId: string = body.userId;
 
-      // 1️⃣ Fetch all buffered messages
-      const ddbResult = await ddb.send(
-        new GetItemCommand({
-          TableName: process.env.CHAT_BUFFER_TABLE_NAME!,
-          Key: { UserKey: { S: userKey } },
-        })
-      );
+      console.info("👤 tenant/user:", { tenantId, userId });
 
-      const messages =
-        ddbResult.Item?.messages?.L?.map((x) => x.S as string) ?? [];
+      let incoming: unknown =
+        body.messages ?? body.combinedText ?? body.message ?? null;
+
+      let messages: string[] = [];
+      if (Array.isArray(incoming)) {
+        messages = incoming
+          .map((m) => (m == null ? "" : String(m)))
+          .map((s) => s.trim())
+          .filter(Boolean);
+      } else if (typeof incoming === "string") {
+        const cameAsCombined =
+          body.combinedText !== undefined && body.messages === undefined;
+        messages = (cameAsCombined ? incoming.split(/\r?\n/) : [incoming])
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+
+      console.info("🧾 parsed messages:", {
+        count: messages.length,
+        sample: trunc(messages.join(" | ")),
+      });
 
       if (!messages.length) {
-        console.warn(`⚠️ No buffered messages found for ${userKey}`);
+        console.warn("⚠️ No messages to process; exiting early.");
         return;
       }
 
-      // 2️⃣ Identify tenant from phone number
-      const tenant = await this.tenantRepository.getTenantByPhoneNumberId(
-        userId
-      );
-      const resolvedTenantId = tenant?.tenantId || tenantId;
+      const userKey = `${tenantId}#${userId}`;
 
-      // 3️⃣ Get previous chat history
+      // ---- History (optional; for auditing/analytics) ----
       const history = await this.chatRepository.getRecentHistory(
-        resolvedTenantId,
+        tenantId,
         userId,
         10
       );
+      console.info("🗂️ recent history:", { count: history.length });
 
-      // Append all buffered messages
-      for (const msg of messages) {
-        history.push({ role: "human", message: msg });
+      // ---- Last user message drives the turn ----
+      const lastMessage = messages[messages.length - 1];
+      console.info("💬 lastMessage:", trunc(lastMessage));
+
+      // ---- WhatsApp secrets in parallel ----
+      const waSecretsPromise = getWhatsappSecrets(tenantId);
+
+      // ---- Read memory summary ('' on first time) ----
+      const memorySummary = await this.memoryRepository.getSummary(
+        tenantId,
+        userId
+      );
+      console.info("🧠 memory.getSummary:", {
+        found: !!memorySummary,
+        len: memorySummary?.length ?? 0,
+        sample: trunc(memorySummary, 120),
+      });
+
+      // ---- Run one-shot workflow (LLM) ----
+      const state = await wf.run(lastMessage, memorySummary || "");
+      console.info("🧭 LLM decision:", {
+        action: state?.decision?.action,
+        category: state?.decision?.category,
+        confidence: state?.decision?.confidence,
+        finalLen: state?.final_answer?.length ?? 0,
+        finalSample: trunc(state?.final_answer || "", 160),
+      });
+
+      // ---- WhatsApp secrets resolve ----
+      const waSecrets = await waSecretsPromise;
+      const { WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID } = waSecrets;
+      console.info("🔑 WA secrets loaded:", {
+        hasToken: !!WHATSAPP_ACCESS_TOKEN,
+        phoneIdSuffix: (WHATSAPP_PHONE_NUMBER_ID || "").slice(-6),
+      });
+
+      const reply = state.final_answer || "¿Podrías aclararme tu consulta? 😊";
+
+      // ---- Send reply (user-facing latency ends here) ----
+      try {
+        await sendWhatsappText(
+          userId,
+          reply,
+          WHATSAPP_ACCESS_TOKEN,
+          WHATSAPP_PHONE_NUMBER_ID
+        );
+        console.info("📤 WhatsApp sent:", { to: userId, len: reply.length });
+      } catch (e) {
+        console.error("❌ WhatsApp send failed:", (e as Error)?.message);
+        // Still persist chat; do not early return.
       }
 
-      // 4️⃣ Run the AI workflow
-      const start = Date.now();
-      const lastMessage = messages[messages.length - 1];
-      const workflowResult: State = await this.dentalWorkflow.run(
-        lastMessage,
-        history
-      );
-      console.log(`✅ Workflow done in ${Date.now() - start} ms`);
-
-      const reply =
-        workflowResult.final_answer || "¿Podrías aclararme tu consulta? 😊";
-
-      // 5️⃣ Send reply back to WhatsApp
-      const {
-        WHATSAPP_ACCESS_TOKEN,
-        WHATSAPP_PHONE_NUMBER_ID,
-      } = await getWhatsappSecrets(userId);
-
-      await sendWhatsappText(
-        userId,
-        reply,
-        WHATSAPP_ACCESS_TOKEN,
-        WHATSAPP_PHONE_NUMBER_ID
-      );
-
-      console.log(`📤 Reply sent to ${userId}: "${reply}"`);
-
-      // 6️⃣ Persist messages
-      const saveOps = [
+      // ---- Persist messages ----
+      const ops = [
         ...messages.map((m) =>
-          this.chatRepository.saveMessage(resolvedTenantId, userId, "user", m)
+          this.chatRepository.saveMessage(tenantId, userId, "user", m)
         ),
-        this.chatRepository.saveMessage(resolvedTenantId, userId, "agent", reply),
+        this.chatRepository.saveMessage(tenantId, userId, "agent", reply),
       ];
 
-      await Promise.allSettled(saveOps);
-      console.log("💾 Messages stored successfully");
+      const results = await Promise.allSettled(ops);
+      const persisted = results.filter((r) => r.status === "fulfilled").length;
+      const failed = results.length - persisted;
+      console.info("💾 chat persisted:", {
+        total: results.length,
+        persisted,
+        failed,
+      });
 
-      // 7️⃣ Clear the buffer
-      await ddb.send(
-        new DeleteItemCommand({
-          TableName: process.env.CHAT_BUFFER_TABLE_NAME!,
-          Key: { UserKey: { S: userKey } },
-        })
-      );
+      // ---- Clear buffer item ----
+      try {
+        await ddb.send(
+          new DeleteItemCommand({
+            TableName: process.env.CHAT_BUFFER_TABLE_NAME!,
+            Key: { UserKey: { S: userKey } },
+          })
+        );
+        console.info("🧹 buffer cleared:", { userKey });
+      } catch (e) {
+        console.warn(
+          "⚠️ buffer clear failed (non-blocking):",
+          (e as Error)?.message
+        );
+      }
 
-      console.log(`🧹 Cleared message buffer for ${userKey}`);
+      // -----------------------------------------------------------------------------
+      // Memory update (LLM summary) — awaited, but STRICTLY TIMEBOXED
+      // -----------------------------------------------------------------------------
+      const MEM_TIMEOUT_MS = 2500;
+
+      try {
+        console.info("🧠 summarizeMemoryTurn:begin", {
+          prevLen: memorySummary?.length ?? 0,
+          first: !memorySummary,
+          timeoutMs: MEM_TIMEOUT_MS,
+        });
+
+        // Timebox the summarizer; on timeout we throw and go to fallback path
+        const newSummary = await Promise.race([
+          summarizeMemoryTurn({
+            prevSummary: memorySummary || "",
+            lastUserMsg: lastMessage,
+            agentReply: reply,
+            firstTurn: !memorySummary,
+          }),
+          timeout(MEM_TIMEOUT_MS, "memory-summarizer-timeout"),
+        ]);
+
+        console.info("🧠 summarizeMemoryTurn:done", {
+          newLen: newSummary.length,
+          sample: trunc(newSummary, 160),
+        });
+
+        await this.memoryRepository.setSummary(tenantId, userId, newSummary);
+        console.info("💾 memory.setSummary:ok", {
+          userKey,
+          len: newSummary.length,
+        });
+      } catch (e) {
+        console.warn(
+          "⚠️ memory summarizer failed or timed out; using deterministic fallback:",
+          (e as Error)?.message
+        );
+        try {
+          await this.memoryRepository.mergeAndUpdateDeterministic(
+            tenantId,
+            userId,
+            lastMessage,
+            reply,
+            memorySummary || ""
+          );
+          console.info("💾 memory.mergeAndUpdateDeterministic:ok", { userKey });
+        } catch (e2) {
+          console.warn(
+            "⚠️ memory deterministic fallback failed:",
+            (e2 as Error)?.message
+          );
+        }
+      }
+
+      // -----------------------------------------------------------------------------
+
+      console.info("✅ ChatService.handleRecord:done", { reqId });
     } catch (err) {
-      console.error("❌ Error processing buffered chat:", err);
-      throw err; // Let Lambda retry via SQS
+      console.error("❌ ChatService.handleRecord:error", {
+        msg: (err as Error)?.message,
+        stack: (err as Error)?.stack?.split("\n").slice(0, 3).join(" | "),
+      });
+      throw err; // SQS retry
     }
   }
 }
