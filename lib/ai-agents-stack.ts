@@ -65,6 +65,17 @@ export class AiAgentsStack extends cdk.Stack {
       // ⛔ no TTL configuration
     });
 
+    // 🧠 NEW: Memory summaries table (one short summary per user)
+    // PK: UserKey = "<tenantId>#<userId>"
+    // Attributes (runtime): summary (S), updatedAt (S ISO), version (N) if you choose to use it
+    const memoryTable = new dynamodb.Table(this, "MemorySummaries", {
+      partitionKey: { name: "UserKey", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dataKey,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
     // 📨 Queues
     const chatIngressDlq = new sqs.Queue(this, "ChatIngressDLQ", {
       retentionPeriod: cdk.Duration.days(14),
@@ -190,12 +201,17 @@ export class AiAgentsStack extends cdk.Stack {
         TENANT_TABLE_NAME: tenantTable.tableName,
         TENANT_GSI_PHONE: "PhoneNumberIdIndex",
         CHAT_SESSIONS_TABLE_NAME: chatTable.tableName,
+        // 🧠 NEW: pass memory table name
+        MEMORY_TABLE_NAME: memoryTable.tableName,
       },
     });
 
     tenantTable.grantReadData(chatServiceLambda);
     chatBufferTable.grantReadWriteData(chatServiceLambda);
     chatTable.grantReadWriteData(chatServiceLambda);
+    // grant ChatService read/write to memory table
+    memoryTable.grantReadWriteData(chatServiceLambda);
+
     geminiSecret.grantRead(chatServiceLambda);
     dataKey.grantEncryptDecrypt(chatServiceLambda);
 
@@ -244,5 +260,6 @@ export class AiAgentsStack extends cdk.Stack {
     webhook.addMethod("POST", new apigateway.LambdaIntegration(webhookLambda));
 
     new cdk.CfnOutput(this, "WebhookUrl", { value: `${api.url}webhook` });
+    new cdk.CfnOutput(this, "MemoryTableName", { value: memoryTable.tableName });
   }
 }
