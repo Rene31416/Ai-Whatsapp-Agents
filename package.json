@@ -10,7 +10,8 @@
     "watch": "esbuild src/app/lambda-handlers/*.ts --bundle --platform=node --target=node20 --outdir=dist --watch --external:aws-sdk",
     "start": "ts-node src/app/main.ts",
     "test": "jest",
-    "cdk": "cdk deploy"
+    "cdk": "cdk deploy",
+    "local": "npx ts-node src/poc/poc-fats.ts"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.152",
@@ -38,6 +39,7 @@
     "constructs": "^10.0.0",
     "inversify": "^7.7.1",
     "langchain": "^0.3.0",
-    "ts-lambda-api": "^2.5.2"
+    "ts-lambda-api": "^2.5.2",
+    "zod": "^4.1.12"
   }
 }
