@@ -4,6 +4,8 @@ import { ChatService } from "../chat/chat.service";
 import { DentalWorkflow } from "../chat/dental.workflow";
 import { WhatsappController } from "../controller/chat.controller";
 import { ChatRepository } from "../chat/chat.repository";
+import { MemoryRepository } from "../chat/memory.repository";
+
 
 const container:Container = new Container();
 
@@ -11,6 +13,8 @@ container.bind(ChatService).toSelf();
 container.bind(DentalWorkflow).toSelf();
 container.bind(WhatsappController).toSelf();
 container.bind(ChatRepository).toSelf()
+container.bind(MemoryRepository).toSelf()
+
 
 
 export { container };
