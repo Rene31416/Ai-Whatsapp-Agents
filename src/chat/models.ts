@@ -9,10 +9,8 @@ let cachedKey: string | null = null;
 let llmInstance: ChatGoogleGenerativeAI | null = null;
 
 async function getApiKey(): Promise<string> {
-  // ✅ Return cached key if available
   if (cachedKey !== null) return cachedKey;
 
-  // ✅ Fallback for local development
   if (!process.env.GEMINI_SECRET_ARN) {
     const localKey = process.env.GOOGLE_API_KEY;
     if (!localKey) {
@@ -25,7 +23,6 @@ async function getApiKey(): Promise<string> {
     return cachedKey;
   }
 
-  // ✅ Running in AWS — use Secrets Manager
   const arn = process.env.GEMINI_SECRET_ARN;
   const client = new SecretsManagerClient({});
   const response = await client.send(
@@ -37,63 +34,51 @@ async function getApiKey(): Promise<string> {
 
   const secret = JSON.parse(response.SecretString);
   cachedKey = secret.GOOGLE_API_KEY;
-
   if (!cachedKey) throw new Error("GOOGLE_API_KEY missing in secret JSON");
   console.log("🔒 Retrieved Google API key from Secrets Manager");
   return cachedKey;
 }
 
-let cachedTenantSecrets: Record<
-  string,
-  {
-    WHATSAPP_ACCESS_TOKEN: string;
-    WHATSAPP_PHONE_NUMBER_ID: string;
-    VERIFY_TOKEN: string;
-  }
-> = {};
-
-export async function getWhatsappSecrets(phoneNumberId?: string) {
-  if (phoneNumberId && cachedTenantSecrets[phoneNumberId]) return cachedTenantSecrets[phoneNumberId];
-
-  // Use default secret for verification handshake (no tenant context)
-  const baseArn = process.env.WHATSAPP_SECRET_ARN!;
-  const secretArn = phoneNumberId ? `${baseArn}${phoneNumberId}` : `${baseArn}default`; // fallback
-
-  console.log("🔑 Fetching secret:", secretArn);
-
-  const client = new SecretsManagerClient({});
-  const response = await client.send(new GetSecretValueCommand({ SecretId: secretArn }));
-
-  if (!response.SecretString)
-    throw new Error(`Empty secret value from Secrets Manager for ${phoneNumberId || "default"}`);
-
-  const secret = JSON.parse(response.SecretString);
-  const secrets = {
-    WHATSAPP_ACCESS_TOKEN: secret.WHATSAPP_ACCESS_TOKEN,
-    WHATSAPP_PHONE_NUMBER_ID: secret.WHATSAPP_PHONE_NUMBER_ID,
-    VERIFY_TOKEN: secret.VERIFY_TOKEN,
-  };
-
-  if (phoneNumberId) cachedTenantSecrets[phoneNumberId] = secrets;
-  console.log(`🔒 Retrieved WhatsApp secrets for ${phoneNumberId || "default"}`);
-  return secrets;
-}
-
-
+// ⚠️ Deja el modelo SIN hyperparams aquí.
+//    Todo lo que sea temperature/maxOutputTokens/responseMimeType/safetySettings
+//    lo seteamos con .bind() por llamada.
 export async function getLLM(): Promise<ChatGoogleGenerativeAI> {
-  if (llmInstance) return llmInstance; // ✅ cached between Lambda invocations
-
+  if (llmInstance) return llmInstance;
   const apiKey = await getApiKey();
 
   llmInstance = new ChatGoogleGenerativeAI({
-    model: "gemini-2.5-flash",
-    temperature: 0.4,
-    maxOutputTokens: 2048,
+    model: "gemini-2.5-flash-lite",
     apiKey,
   });
 
   console.log("✨ Gemini LLM initialized");
   return llmInstance;
+}
+
+// (Opcional) helper si querés un “tuned” ya listo cuando te convenga:
+export async function getTunedLLM(opts?: {
+  temperature?: number;
+  top_p?: number;
+  maxOutputTokens?: number;
+  responseMimeType?: string;
+  safetySettings?: any; // ver doc de google-genai si querés tiparlo
+}) {
+  const base = await getLLM();
+  return (base as any).bind?.({
+    temperature: 0.35,
+    top_p: 0.9,
+    maxOutputTokens: 192,
+    responseMimeType: "application/json",
+    // Safety permisivo para evitar cortes por seguridad en frases inofensivas:
+    // Ajustalo a tu gusto/riesgo.
+    safetySettings: [
+      { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+      { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+      { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+      { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+    ],
+    ...(opts ?? {}),
+  }) ?? base;
 }
 
 export async function sendWhatsappText(
@@ -130,6 +115,75 @@ export async function sendWhatsappText(
     throw error;
   }
 }
+
+// models.ts (o donde centralices integraciones)
+
+let cachedTenantSecrets: Record<
+  string,
+  {
+    WHATSAPP_ACCESS_TOKEN: string;
+    WHATSAPP_PHONE_NUMBER_ID: string;
+    VERIFY_TOKEN: string;
+  }
+> = {};
+
+/**
+ * Devuelve credenciales de WhatsApp para un tenant/phoneNumberId.
+ * - Si pasas `phoneNumberId` (en tu Lambda lo usas como tenantId), se intenta cargar
+ *   el secreto `${process.env.WHATSAPP_SECRET_ARN}${phoneNumberId}` y se cachea.
+ * - Si no pasas `phoneNumberId`, usa `${baseArn}default` (útil para handshakes).
+ */
+export async function getWhatsappSecrets(phoneNumberId?: string) {
+  if (phoneNumberId && cachedTenantSecrets[phoneNumberId]) {
+    return cachedTenantSecrets[phoneNumberId];
+  }
+
+  const baseArn = process.env.WHATSAPP_SECRET_ARN!;
+  if (!baseArn) {
+    throw new Error("WHATSAPP_SECRET_ARN env is required");
+  }
+
+  // Cuando llamas con tenantId, construimos ARN específico por tenant.
+  const secretArn = phoneNumberId
+    ? `${baseArn}${phoneNumberId}`
+    : `${baseArn}default`;
+
+  console.log("🔑 Fetching secret:", secretArn);
+
+  const client = new SecretsManagerClient({});
+  const response = await client.send(
+    new GetSecretValueCommand({ SecretId: secretArn })
+  );
+
+  if (!response.SecretString) {
+    throw new Error(
+      `Empty secret value from Secrets Manager for ${phoneNumberId || "default"}`
+    );
+  }
+
+  const secret = JSON.parse(response.SecretString);
+  const secrets = {
+    WHATSAPP_ACCESS_TOKEN: secret.WHATSAPP_ACCESS_TOKEN,
+    WHATSAPP_PHONE_NUMBER_ID: secret.WHATSAPP_PHONE_NUMBER_ID,
+    VERIFY_TOKEN: secret.VERIFY_TOKEN,
+  };
+
+  if (!secrets.WHATSAPP_ACCESS_TOKEN || !secrets.WHATSAPP_PHONE_NUMBER_ID) {
+    throw new Error(
+      `Missing required WhatsApp fields in secret for ${phoneNumberId || "default"}`
+    );
+  }
+
+  if (phoneNumberId) {
+    cachedTenantSecrets[phoneNumberId] = secrets;
+  }
+
+  console.log(
+    `🔒 Retrieved WhatsApp secrets for ${phoneNumberId || "default"}`
+  );
+  return secrets;
+}
+
 
 export interface State {
   message?: string;

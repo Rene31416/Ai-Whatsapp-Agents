@@ -6,7 +6,7 @@ import { ChatRepository } from "./chat.repository";
 import { getWhatsappSecrets, sendWhatsappText } from "./models";
 import { DentalWorkflow } from "./dental.workflow";
 import { MemoryRepository } from "./memory.repository";
-import { summarizeMemoryTurn } from "../prompts/dental-prompts";
+import { buildFactsHeader, buildRecentWindow } from "../prompts/propmts.helper";
 
 const ddb = new DynamoDBClient({});
 const wf = new DentalWorkflow();
@@ -15,12 +15,6 @@ function trunc(s: string, n = 140) {
   if (!s) return "";
   const t = s.replace(/\s+/g, " ").trim();
   return t.length > n ? `${t.slice(0, n)}…` : t;
-}
-
-function timeout(ms: number, label = "timeout"): Promise<never> {
-  return new Promise((_, reject) => {
-    setTimeout(() => reject(new Error(label)), ms);
-  });
 }
 
 @injectable()
@@ -37,6 +31,7 @@ export class ChatService {
       (record as any)?.awsRequestId ||
       (global as any).crypto?.randomUUID?.() ||
       "req";
+
     console.info("▶️ ChatService.handleRecord:start", {
       reqId,
       region: process.env.AWS_REGION,
@@ -85,54 +80,74 @@ export class ChatService {
 
       const userKey = `${tenantId}#${userId}`;
 
-      // ---- History (optional; for auditing/analytics) ----
-      const history = await this.chatRepository.getRecentHistory(
-        tenantId,
-        userId,
-        10
+      // ------------------------------------------------------------------
+      // 0) Persist user turns FIRST (match local index behavior)
+      // ------------------------------------------------------------------
+      const userSaves = await Promise.allSettled(
+        messages.map((m) => this.chatRepository.saveMessage(tenantId, userId, "user", m))
       );
-      console.info("🗂️ recent history:", { count: history.length });
+      const userSaved = userSaves.filter((r) => r.status === "fulfilled").length;
+      const userFailed = userSaves.length - userSaved;
+      console.info("💾 user turns persisted (pre-LLM):", {
+        total: userSaves.length,
+        persisted: userSaved,
+        failed: userFailed,
+      });
 
       // ---- Last user message drives the turn ----
       const lastMessage = messages[messages.length - 1];
       console.info("💬 lastMessage:", trunc(lastMessage));
 
-      // ---- WhatsApp secrets in parallel ----
+      // ---- WhatsApp secrets in parallel (doesn't block prompt prep) ----
       const waSecretsPromise = getWhatsappSecrets(tenantId);
 
-      // ---- Read memory summary ('' on first time) ----
-      const memorySummary = await this.memoryRepository.getSummary(
-        tenantId,
-        userId
-      );
-      console.info("🧠 memory.getSummary:", {
-        found: !!memorySummary,
-        len: memorySummary?.length ?? 0,
-        sample: trunc(memorySummary, 120),
+      // ------------------------------------------------------------------
+      // 1) Read memory object + recent history (like index)
+      // ------------------------------------------------------------------
+      const [{ memory: memObj }, history] = await Promise.all([
+        this.memoryRepository.getMemory(tenantId, userId), // object for facts header
+        this.chatRepository.getRecentHistory(tenantId, userId, 10), // for recent window
+      ]);
+
+      // ------------------------------------------------------------------
+      // 2) Build 3-block inputs
+      // ------------------------------------------------------------------
+      const factsHeader = buildFactsHeader(memObj);              // PERFIL: Nombre=… | Tel=… | Email=…
+      const recentWindow = buildRecentWindow(history, 8, 1600);  // U:/A: compact lines
+      console.info("[flow][mem]", {
+        facts_len: factsHeader.length,
+        recent_len: recentWindow.length,
       });
 
-      // ---- Run one-shot workflow (LLM) ----
-      const state = await wf.run(lastMessage, memorySummary || "");
+      // ------------------------------------------------------------------
+      // 3) LLM (fail-fast) — same workflow signature as index
+      // ------------------------------------------------------------------
+      const state = await wf.run(lastMessage, factsHeader, recentWindow);
+      const reply = (state?.final_answer ?? "").trim();
+
       console.info("🧭 LLM decision:", {
-        action: state?.decision?.action,
-        category: state?.decision?.category,
-        confidence: state?.decision?.confidence,
-        finalLen: state?.final_answer?.length ?? 0,
-        finalSample: trunc(state?.final_answer || "", 160),
+        identify_intent: !!state?.decision?.identify_intent,
+        confidence: Number(state?.decision?.confidence ?? 0),
+        finalLen: reply.length,
+        finalSample: trunc(reply, 160),
       });
 
-      // ---- WhatsApp secrets resolve ----
-      const waSecrets = await waSecretsPromise;
-      const { WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID } = waSecrets;
-      console.info("🔑 WA secrets loaded:", {
-        hasToken: !!WHATSAPP_ACCESS_TOKEN,
-        phoneIdSuffix: (WHATSAPP_PHONE_NUMBER_ID || "").slice(-6),
-      });
+      if (!reply) {
+        // Fail-fast: do not send WA; let SQS retry
+        throw new Error("EMPTY_REPLY(service): final_answer vacío tras workflow.");
+      }
 
-      const reply = state.final_answer || "¿Podrías aclararme tu consulta? 😊";
-
-      // ---- Send reply (user-facing latency ends here) ----
+      // ------------------------------------------------------------------
+      // 4) Send WhatsApp (index prints; here we send)
+      // ------------------------------------------------------------------
       try {
+        const waSecrets = await waSecretsPromise;
+        const { WHATSAPP_ACCESS_TOKEN, WHATSAPP_PHONE_NUMBER_ID } = waSecrets;
+        console.info("🔑 WA secrets loaded:", {
+          hasToken: !!WHATSAPP_ACCESS_TOKEN,
+          phoneIdSuffix: (WHATSAPP_PHONE_NUMBER_ID || "").slice(-6),
+        });
+
         await sendWhatsappText(
           userId,
           reply,
@@ -145,22 +160,15 @@ export class ChatService {
         // Still persist chat; do not early return.
       }
 
-      // ---- Persist messages ----
-      const ops = [
-        ...messages.map((m) =>
-          this.chatRepository.saveMessage(tenantId, userId, "user", m)
-        ),
-        this.chatRepository.saveMessage(tenantId, userId, "agent", reply),
-      ];
-
-      const results = await Promise.allSettled(ops);
-      const persisted = results.filter((r) => r.status === "fulfilled").length;
-      const failed = results.length - persisted;
-      console.info("💾 chat persisted:", {
-        total: results.length,
-        persisted,
-        failed,
-      });
+      // ------------------------------------------------------------------
+      // 5) Persist agent reply (match index timing — after successful LLM)
+      // ------------------------------------------------------------------
+      try {
+        await this.chatRepository.saveMessage(tenantId, userId, "agent", reply);
+        console.info("💾 agent turn persisted:", { len: reply.length });
+      } catch (e) {
+        console.warn("⚠️ agent persist failed:", (e as Error)?.message);
+      }
 
       // ---- Clear buffer item ----
       try {
@@ -177,61 +185,6 @@ export class ChatService {
           (e as Error)?.message
         );
       }
-
-      // -----------------------------------------------------------------------------
-      // Memory update (LLM summary) — awaited, but STRICTLY TIMEBOXED
-      // -----------------------------------------------------------------------------
-      const MEM_TIMEOUT_MS = 2500;
-
-      try {
-        console.info("🧠 summarizeMemoryTurn:begin", {
-          prevLen: memorySummary?.length ?? 0,
-          first: !memorySummary,
-          timeoutMs: MEM_TIMEOUT_MS,
-        });
-
-        // Timebox the summarizer; on timeout we throw and go to fallback path
-        const newSummary = await Promise.race([
-          summarizeMemoryTurn({
-            prevSummary: memorySummary || "",
-            lastUserMsg: lastMessage
-          }),
-          timeout(MEM_TIMEOUT_MS, "memory-summarizer-timeout"),
-        ]);
-
-        console.info("🧠 summarizeMemoryTurn:done", {
-          newLen: newSummary.length,
-          sample: trunc(newSummary, 160),
-        });
-
-        await this.memoryRepository.setSummary(tenantId, userId, newSummary);
-        console.info("💾 memory.setSummary:ok", {
-          userKey,
-          len: newSummary.length,
-        });
-      } catch (e) {
-        console.warn(
-          "⚠️ memory summarizer failed or timed out; using deterministic fallback:",
-          (e as Error)?.message
-        );
-        try {
-          await this.memoryRepository.mergeAndUpdateDeterministic(
-            tenantId,
-            userId,
-            lastMessage,
-            reply,
-            memorySummary || ""
-          );
-          console.info("💾 memory.mergeAndUpdateDeterministic:ok", { userKey });
-        } catch (e2) {
-          console.warn(
-            "⚠️ memory deterministic fallback failed:",
-            (e2 as Error)?.message
-          );
-        }
-      }
-
-      // -----------------------------------------------------------------------------
 
       console.info("✅ ChatService.handleRecord:done", { reqId });
     } catch (err) {

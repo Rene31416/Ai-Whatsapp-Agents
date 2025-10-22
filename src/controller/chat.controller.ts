@@ -6,12 +6,9 @@ import {
   body,
   queryParam,
 } from "ts-lambda-api";
-import {
-  DynamoDBClient,
-  PutItemCommand,
-} from "@aws-sdk/client-dynamodb";
+import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 
-const ddb = new DynamoDBClient({});
+const sqs = new SQSClient({});
 
 @apiController("/webhook")
 export class WhatsappController extends Controller {
@@ -24,19 +21,18 @@ export class WhatsappController extends Controller {
   ) {
     console.log("🔍 Incoming webhook query:", { mode, token, challenge });
 
-    // 🧩 Temporary hardcoded token for testing
     const VERIFY_TOKEN = "test-handshake-token";
 
     if (mode === "subscribe" && token === VERIFY_TOKEN && challenge) {
       console.log("✅ Webhook verified successfully");
-      return parseInt(challenge, 10); // Meta expects the raw number
+      return parseInt(challenge, 10);
     }
 
     console.warn("❌ Invalid token or bad request", { mode, token, challenge });
     return { statusCode: 403, body: { detail: "Forbidden" } };
   }
 
-  // 📬 POST /webhook — minimal validation + store message in DynamoDB buffer
+  // 📬 POST /webhook — minimal validation + send message to SQS buffer
   @POST("/")
   async receiveWebhook(@body body: any) {
     console.log("📩 Incoming webhook body:", JSON.stringify(body, null, 2));
@@ -46,11 +42,9 @@ export class WhatsappController extends Controller {
       const change = entry?.changes?.[0];
       const value = change?.value;
 
-      // Ignore non-message callbacks (e.g., delivery/status updates)
       if (value?.statuses) return { status: "ok", ignored: "status_event" };
 
-      const phoneNumberId: string | undefined =
-        value?.metadata?.phone_number_id;
+      const phoneNumberId = value?.metadata?.phone_number_id;
       if (!phoneNumberId)
         return { status: "ok", ignored: "missing_phone_number_id" };
 
@@ -59,39 +53,34 @@ export class WhatsappController extends Controller {
       if (msg.type !== "text")
         return { status: "ok", ignored: `non_text:${msg.type}` };
 
-      const from: string | undefined = msg.from;
-      const messageId: string | undefined = msg.id;
-      const text: string | undefined = msg.text?.body?.trim();
+      const from = msg.from;
+      const messageId = msg.id;
+      const text = msg.text?.body?.trim();
 
       if (!from) return { status: "ok", ignored: "missing_from" };
       if (!messageId) return { status: "ok", ignored: "missing_message_id" };
       if (!text) return { status: "ok", ignored: "empty_text" };
 
       const payload = {
-        phoneNumberId,
-        from, // WhatsApp user ID (phone)
-        text, // message text
-        messageId, // used for deduplication
+        tenantId: phoneNumberId, // ✅ so aggregator/ChatService can use this
+        phoneNumberId, // keep original for clarity
+        userId: from, // ✅ standardize field name
+        text,
+        messageId,
         timestamp: Date.now(),
       };
 
-      // ✅ Write directly to DynamoDB (ChatMessageBuffer)
-      const tableName = process.env.CHAT_BUFFER_TABLE_NAME!;
-      await ddb.send(
-        new PutItemCommand({
-          TableName: tableName,
-          Item: {
-            UserKey: { S: from },
-            MessageId: { S: messageId },
-            PhoneNumberId: { S: phoneNumberId },
-            Text: { S: text },
-            Timestamp: { N: `${payload.timestamp}` },
-          },
+      // ✅ Send to SQS (ChatIngressQueue)
+      const queueUrl = process.env.CHAT_INGRESS_QUEUE_URL!;
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: queueUrl,
+          MessageBody: JSON.stringify(payload),
         })
       );
 
-      console.log(`✅ Stored message ${messageId} for ${from}`);
-      return { status: "ok", stored: true };
+      console.log(`✅ Sent message ${messageId} for ${from} to SQS`);
+      return { status: "ok", queued: true };
     } catch (err: any) {
       console.error("❌ Webhook error:", err);
       return { statusCode: 500, body: { detail: "Internal server error" } };
