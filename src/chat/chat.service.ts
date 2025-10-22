@@ -194,9 +194,7 @@ export class ChatService {
         const newSummary = await Promise.race([
           summarizeMemoryTurn({
             prevSummary: memorySummary || "",
-            lastUserMsg: lastMessage,
-            agentReply: reply,
-            firstTurn: !memorySummary,
+            lastUserMsg: lastMessage
           }),
           timeout(MEM_TIMEOUT_MS, "memory-summarizer-timeout"),
         ]);
