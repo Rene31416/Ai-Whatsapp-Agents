@@ -9,6 +9,8 @@
     "build": "npm run clean && esbuild src/app/lambda-handlers/*.ts --bundle --platform=node --target=node20 --outdir=dist --external:aws-sdk",
     "watch": "esbuild src/app/lambda-handlers/*.ts --bundle --platform=node --target=node20 --outdir=dist --watch --external:aws-sdk",
     "start": "ts-node src/app/main.ts",
+    "dash": "ts-node src/devtools/dash-log-call/index.ts",
+    "dash:demo": "ts-node src/devtools/dash-log-call/index.ts --tenant 762197213646084 --user 50373145544",
     "test": "jest",
     "cdk": "cdk deploy",
     "local": "npx ts-node src/poc/poc-fats.ts"
@@ -39,6 +41,7 @@
     "constructs": "^10.0.0",
     "inversify": "^7.7.1",
     "langchain": "^0.3.0",
+    "readline": "^1.3.0",
     "ts-lambda-api": "^2.5.2",
     "zod": "^4.1.12"
   }
