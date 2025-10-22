@@ -1,4 +1,8 @@
-import { DynamoDBClient, PutItemCommand, QueryCommand } from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBClient,
+  PutItemCommand,
+  QueryCommand,
+} from "@aws-sdk/client-dynamodb";
 import { injectable } from "inversify";
 
 @injectable()
@@ -6,7 +10,12 @@ export class ChatRepository {
   private client = new DynamoDBClient({});
   private tableName = process.env.CHAT_SESSIONS_TABLE_NAME!; // ✅ use env var injected by CDK
 
-  async saveMessage(tenantId: string, userId: string, role: "user" | "agent", message: string) {
+  async saveMessage(
+    tenantId: string,
+    userId: string,
+    role: "user" | "agent",
+    message: string
+  ) {
     const timestamp = new Date().toISOString();
     const PK = `TENANT#${tenantId}#USER#${userId}`;
     const SK = `TS#${timestamp}`;
@@ -18,6 +27,7 @@ export class ChatRepository {
       message: { S: message },
       timestamp: { S: timestamp },
     };
+    console.log("💬 Saving", { role, PK, SK });
 
     await this.client.send(
       new PutItemCommand({
@@ -27,7 +37,7 @@ export class ChatRepository {
     );
   }
 
-  async getRecentHistory(tenantId: string, userId: string, limit = 10) {
+  async getRecentHistory(tenantId: string, userId: string, limit = 10):Promise<any[]>{
     const PK = `TENANT#${tenantId}#USER#${userId}`;
     const res = await this.client.send(
       new QueryCommand({
