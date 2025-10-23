@@ -4,7 +4,10 @@ import { getLLM, CLINIC_CONTEXT } from "../chat/models";
 import { JsonOutputParser } from "@langchain/core/output_parsers";
 
 export const DecisionLiteSchema = z.object({
-  final_answer: z.string().min(1, "final_answer vacío").max(400, "final_answer excede 400 chars"),
+  final_answer: z
+    .string()
+    .min(1, "final_answer vacío")
+    .max(400, "final_answer excede 400 chars"),
   identify_intent: z.boolean(),
   confidence: z.number().min(0).max(1),
 });
@@ -21,18 +24,30 @@ function extractAnyText(msg: any): string {
   if (!msg) return "";
   if (typeof msg?.content === "string") return msg.content;
   if (Array.isArray(msg?.content)) {
-    const t = msg.content.map((p: any) => p?.text || p?.content || "").filter(Boolean).join("\n");
+    const t = msg.content
+      .map((p: any) => p?.text || p?.content || "")
+      .filter(Boolean)
+      .join("\n");
     if (t.trim()) return t;
   }
   const gen = msg?.generations?.[0]?.[0];
   const gText = gen?.text ?? gen?.message?.content;
   if (typeof gText === "string" && gText.trim()) return gText;
-  const parts = msg?.response?.candidates?.[0]?.content?.parts ?? msg?.candidates?.[0]?.content?.parts;
+  const parts =
+    msg?.response?.candidates?.[0]?.content?.parts ??
+    msg?.candidates?.[0]?.content?.parts;
   if (Array.isArray(parts)) {
-    const t = parts.map((p: any) => p?.text || "").filter(Boolean).join("\n");
+    const t = parts
+      .map((p: any) => p?.text || "")
+      .filter(Boolean)
+      .join("\n");
     if (t.trim()) return t;
   }
-  try { return JSON.stringify(msg); } catch { return String(msg ?? ""); }
+  try {
+    return JSON.stringify(msg);
+  } catch {
+    return String(msg ?? "");
+  }
 }
 
 function startTimer(label: string) {
@@ -45,12 +60,16 @@ function startTimer(label: string) {
 }
 
 function getFinishReason(msg: any): string | undefined {
-  return msg?.additional_kwargs?.finishReason
-      ?? msg?.response_metadata?.finishReason
-      ?? msg?.kwargs?.additional_kwargs?.finishReason;
+  return (
+    msg?.additional_kwargs?.finishReason ??
+    msg?.response_metadata?.finishReason ??
+    msg?.kwargs?.additional_kwargs?.finishReason
+  );
 }
 
-function ms(from: bigint, to: bigint) { return Number(to - from) / 1e6; }
+function ms(from: bigint, to: bigint) {
+  return Number(to - from) / 1e6;
+}
 
 export async function decideAndAnswerLite(input: {
   message: string;
@@ -64,8 +83,14 @@ export async function decideAndAnswerLite(input: {
   const clinic = CLINIC_CONTEXT;
 
   const clinic_compact = [
-    clinic.name, clinic.address, clinic.hours, clinic.phone, clinic.website
-  ].filter(Boolean).join(" | ");
+    clinic.name,
+    clinic.address,
+    clinic.hours,
+    clinic.phone,
+    clinic.website,
+  ]
+    .filter(Boolean)
+    .join(" | ");
 
   const parser = new JsonOutputParser<Compact>();
   const tuned =
@@ -77,8 +102,14 @@ export async function decideAndAnswerLite(input: {
       safetySettings: [
         { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
         { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-        { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-        { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" },
+        {
+          category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+          threshold: "BLOCK_NONE",
+        },
+        {
+          category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+          threshold: "BLOCK_NONE",
+        },
       ],
     }) ?? base;
 
@@ -88,10 +119,20 @@ export async function decideAndAnswerLite(input: {
       "facts_header",
       "recent_window",
       "clinic_compact",
-      "now_iso", "now_human", "tz",
+      "now_iso",
+      "now_human",
+      "tz",
     ],
     template: `
 Actúa como asistente de una clínica dental. Responde SIEMPRE en español, tono WhatsApp, 1–2 emojis.
+
+REGLAS DE ESTILO IMPORTANTES:
+- SALUDO Y AUTOPRESENTACIÓN (solo una vez):
+  Puedes saludar y presentarte brevemente (p. ej., “Soy el asistente virtual de Opal Dental Clinic”) ÚNICAMENTE si se cumple TODO:
+  1) VENTANA está vacía (sin líneas), o VENTANA tiene solo líneas de usuario ('U:') y ninguna línea de agente ('A:').
+  2) MSG es un saludo simple (p. ej., “hola”, “buenos días”, “qué tal”) sin otra petición concreta.
+- En cualquier otro caso (existe al menos una 'A:' en VENTANA, o MSG no es un saludo simple), no saludes ni te autopresentes; responde directo al contenido.
+- Mantén 2–3 frases, cálidas y concretas.
 
 SALIDA ESTRICTA:
 Devuelve SOLO un objeto JSON con estas claves cortas:
@@ -109,7 +150,9 @@ MSG: {message}
   });
 
   console.info(
-    `[decide][in] msg_len=${(input.message || "").length} facts_len=${(input.facts_header || "").length} recent_len=${(input.recent_window || "").length}`
+    `[decide][in] msg_len=${(input.message || "").length} facts_len=${
+      (input.facts_header || "").length
+    } recent_len=${(input.recent_window || "").length}`
   );
 
   // ========= Render prompt (input al LLM) =========
@@ -126,29 +169,86 @@ MSG: {message}
   const tRender = process.hrtime.bigint();
 
   // Log de entrada al LLM (snippet y longitudes)
-  console.info(`[llm.input] chars=${rendered.length} preview="${rendered.slice(0, 300).replace(/\n/g,"\\n")}${rendered.length>300?"…":""}"`);
+  console.info(
+    `[llm.input] chars=${rendered.length} preview="${rendered
+      .slice(0, 300)
+      .replace(/\n/g, "\\n")}${rendered.length > 300 ? "…" : ""}"`
+  );
 
   // ========= Invoke LLM =========
   const tInvokeStart = process.hrtime.bigint();
+
+  // ===== métricas rápidas del input =====
+  const vis = (s: string, n = 240) => s.replace(/\s+/g, " ").trim().slice(0, n);
+  const countLines = (s: string) => (s ? s.split(/\r?\n/).length : 0);
+
+  // LOGS de cada bloque
+  console.info(
+    `[llm.input/MSG] len=${(input.message ?? "").length} lines=${countLines(
+      input.message
+    )} vis="${vis(input.message)}"`
+  );
+  console.info(
+    `[llm.input/FACTS] len=${(input.facts_header ?? "").length} vis="${vis(
+      input.facts_header
+    )}"`
+  );
+  console.info(
+    `[llm.input/VENTANA] len=${
+      (input.recent_window ?? "").length
+    } lines=${countLines(input.recent_window)} vis="${vis(
+      input.recent_window,
+      320
+    )}"`
+  );
+
+  // el render ya lo estás logueando con chars y preview
+  console.info(
+    `[llm.input] chars=${rendered.length} preview="${rendered
+      .slice(0, 300)
+      .replace(/\n/g, "\\n")}${rendered.length > 300 ? "…" : ""}"`
+  );
+
   const llmOut: any = await tuned.invoke(rendered);
   const tInvokeEnd = process.hrtime.bigint();
 
   // Timings
-  console.info(`[llm.timing] render_ms=${ms(t0,tRender).toFixed(1)} invoke_ms=${ms(tInvokeStart,tInvokeEnd).toFixed(1)} total_ms=${ms(t0,tInvokeEnd).toFixed(1)}`);
+  console.info(
+    `[llm.timing] render_ms=${ms(t0, tRender).toFixed(1)} invoke_ms=${ms(
+      tInvokeStart,
+      tInvokeEnd
+    ).toFixed(1)} total_ms=${ms(t0, tInvokeEnd).toFixed(1)}`
+  );
 
   // Uso de tokens si está disponible
-  const usage = llmOut?.usage_metadata ?? llmOut?.response_metadata?.tokenUsage ?? {};
-  const promptTok = usage.promptTokens ?? usage.input_tokens ?? usage.inputTokens;
-  const completionTok = usage.completionTokens ?? usage.output_tokens ?? usage.completionTokens;
-  const totalTok = usage.totalTokens ?? usage.total_tokens ?? (promptTok ?? 0) + (completionTok ?? 0);
+  const usage =
+    llmOut?.usage_metadata ?? llmOut?.response_metadata?.tokenUsage ?? {};
+  const promptTok =
+    usage.promptTokens ?? usage.input_tokens ?? usage.inputTokens;
+  const completionTok =
+    usage.completionTokens ?? usage.output_tokens ?? usage.completionTokens;
+  const totalTok =
+    usage.totalTokens ??
+    usage.total_tokens ??
+    (promptTok ?? 0) + (completionTok ?? 0);
   if (promptTok || completionTok || totalTok) {
-    console.info(`[llm.usage] prompt=${promptTok ?? "?"} completion=${completionTok ?? "?"} total=${totalTok ?? "?"}`);
+    console.info(
+      `[llm.usage] prompt=${promptTok ?? "?"} completion=${
+        completionTok ?? "?"
+      } total=${totalTok ?? "?"}`
+    );
   }
 
   // ========= Output bruto del LLM =========
   const fin = getFinishReason(llmOut);
   const rawText = extractAnyText(llmOut) ?? "";
-  console.info(`[llm.output] finish=${fin ?? "?"} chars=${rawText.length} preview="${rawText.slice(0, 300).replace(/\n/g, "\\n")}${rawText.length>300?"…":""}"`);
+  console.info(
+    `[llm.output] finish=${fin ?? "?"} chars=${
+      rawText.length
+    } preview="${rawText.slice(0, 300).replace(/\n/g, "\\n")}${
+      rawText.length > 300 ? "…" : ""
+    }"`
+  );
 
   if ((!rawText || !rawText.trim()) && fin && fin !== "STOP") {
     throw new Error(
@@ -164,22 +264,38 @@ MSG: {message}
   } catch (err: any) {
     const msg = (err?.message || String(err)).slice(0, 500);
     throw new Error(
-      `PARSE_ERROR(decideAndAnswerLite): JSON inválido. Detalle: ${msg}. Raw="${rawText.slice(0, 400)}"`
+      `PARSE_ERROR(decideAndAnswerLite): JSON inválido. Detalle: ${msg}. Raw="${rawText.slice(
+        0,
+        400
+      )}"`
     );
   }
   const tParseEnd = process.hrtime.bigint();
 
   const ok = CompactSchema.safeParse(compact);
   if (!ok.success) {
-    const issues = ok.error.issues?.map(i => `${i.path.join(".")}: ${i.message}`).join("; ");
+    const issues = ok.error.issues
+      ?.map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
     throw new Error(
-      `VALIDATION_ERROR(decideAndAnswerLite): Claves/Tipos inválidos. Issues: ${issues}. Raw="${rawText.slice(0, 400)}"`
+      `VALIDATION_ERROR(decideAndAnswerLite): Claves/Tipos inválidos. Issues: ${issues}. Raw="${rawText.slice(
+        0,
+        400
+      )}"`
     );
   }
   const tValidateEnd = process.hrtime.bigint();
 
   console.info(
-    `[llm.breakdown] render=${ms(t0,tRender).toFixed(1)}ms invoke=${ms(tInvokeStart,tInvokeEnd).toFixed(1)}ms parse=${ms(tParseStart,tParseEnd).toFixed(1)}ms validate=${ms(tParseEnd,tValidateEnd).toFixed(1)}ms total=${ms(t0,tValidateEnd).toFixed(1)}ms`
+    `[llm.breakdown] render=${ms(t0, tRender).toFixed(1)}ms invoke=${ms(
+      tInvokeStart,
+      tInvokeEnd
+    ).toFixed(1)}ms parse=${ms(tParseStart, tParseEnd).toFixed(
+      1
+    )}ms validate=${ms(tParseEnd, tValidateEnd).toFixed(1)}ms total=${ms(
+      t0,
+      tValidateEnd
+    ).toFixed(1)}ms`
   );
 
   // ========= Mapeo y validación final =========
@@ -191,11 +307,17 @@ MSG: {message}
 
   const finOk = DecisionLiteSchema.safeParse(mapped);
   if (!finOk.success) {
-    const issues = finOk.error.issues?.map(i => `${i.path.join(".")}: ${i.message}`).join("; ");
+    const issues = finOk.error.issues
+      ?.map((i) => `${i.path.join(".")}: ${i.message}`)
+      .join("; ");
     throw new Error(`VALIDATION_ERROR(decideAndAnswerLite.mapped): ${issues}.`);
   }
 
   const out = finOk.data;
-  console.info(`[decide][out] a_len=${out.final_answer.length} ii=${out.identify_intent} c=${out.confidence.toFixed(2)}`);
+  console.info(
+    `[decide][out] a_len=${out.final_answer.length} ii=${
+      out.identify_intent
+    } c=${out.confidence.toFixed(2)}`
+  );
   return out;
 }
