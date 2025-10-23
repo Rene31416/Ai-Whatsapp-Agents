@@ -1,3 +1,4 @@
+// src/lambda/handlers/chat.handler.ts
 import "reflect-metadata";
 import { SQSEvent, SQSRecord } from "aws-lambda";
 import { container } from "../container";
@@ -19,23 +20,31 @@ export const handler = async (event: SQSEvent): Promise<void> => {
 
       // ✅ Parse the SQS message body
       const parsedBody = JSON.parse(record.body);
-      const { tenantId, userId, combinedText } = parsedBody;
+      const { tenantId, userId, combinedText, messageCount } = parsedBody;
 
-      if (!tenantId || !userId || !combinedText) {
+      if (!tenantId || !userId || typeof combinedText !== "string" || !combinedText.length) {
         console.warn("⚠️ Missing required fields in record:", parsedBody);
         continue;
       }
 
+      // (Opcional) sanity log del conteo de líneas vs messageCount
+      const splitCount = combinedText.split(/\r?\n/).filter(Boolean).length;
+      if (typeof messageCount === "number" && messageCount !== splitCount) {
+        console.warn("⚠️ messageCount mismatch", { messageCount, splitCount });
+      }
 
-      // ✅ Pass reconstructed messages to ChatService for workflow processing
-      await chatService.handleRecord({
+      // ✅ Pasar el payload **tal cual**, conservando combinedText con saltos de línea
+      const passThrough: SQSRecord = {
         ...record,
         body: JSON.stringify({
           tenantId,
           userId,
-          messages:combinedText,
+          combinedText,      // ← mantenerlo intacto; NO enviar "messages"
+          messageCount,      // ← opcional, útil para auditoría
         }),
-      } as SQSRecord);
+      } as SQSRecord;
+
+      await chatService.handleRecord(passThrough);
     } catch (err) {
       console.error("❌ Error handling SQS record:", err);
       throw err; // Let SQS retry automatically
