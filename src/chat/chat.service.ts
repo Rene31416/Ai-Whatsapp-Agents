@@ -1,4 +1,4 @@
-// chat.service.ts
+// src/chat/chat.service.ts
 import { inject, injectable } from "inversify";
 import { SQSRecord } from "aws-lambda";
 import { DynamoDBClient, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
@@ -7,6 +7,7 @@ import { getWhatsappSecrets, sendWhatsappText } from "./models";
 import { DentalWorkflow } from "./dental.workflow";
 import { MemoryRepository } from "./memory.repository";
 import { buildFactsHeader, buildRecentWindow } from "../prompts/propmts.helper";
+import { PostOpsService } from "./postops.service";
 
 const ddb = new DynamoDBClient({});
 const wf = new DentalWorkflow();
@@ -41,72 +42,51 @@ export class ChatService {
     });
 
     try {
-      // ---- Parse body and normalize messages ----
+      // ---- Parse body (preserve combinedText newlines) ----
       const bodyRaw = record.body;
       console.info("📦 SQS body (raw, len):", bodyRaw?.length ?? 0);
 
       const body = JSON.parse(bodyRaw);
       const tenantId: string = body.tenantId;
       const userId: string = body.userId;
+      const combinedText: string = String(body.combinedText ?? "");
 
       console.info("👤 tenant/user:", { tenantId, userId });
 
-      let incoming: unknown =
-        body.messages ?? body.combinedText ?? body.message ?? null;
-
-      let messages: string[] = [];
-      if (Array.isArray(incoming)) {
-        messages = incoming
-          .map((m) => (m == null ? "" : String(m)))
-          .map((s) => s.trim())
-          .filter(Boolean);
-      } else if (typeof incoming === "string") {
-        const cameAsCombined =
-          body.combinedText !== undefined && body.messages === undefined;
-        messages = (cameAsCombined ? incoming.split(/\r?\n/) : [incoming])
-          .map((s) => s.trim())
-          .filter(Boolean);
-      }
-
-      console.info("🧾 parsed messages:", {
-        count: messages.length,
-        sample: trunc(messages.join(" | ")),
-      });
-
-      if (!messages.length) {
-        console.warn("⚠️ No messages to process; exiting early.");
+      if (!tenantId || !userId || !combinedText) {
+        console.warn("⚠️ Missing required fields; exiting early.");
         return;
       }
 
       const userKey = `${tenantId}#${userId}`;
 
       // ------------------------------------------------------------------
-      // 0) Persist user turns FIRST (match local index behavior)
+      // 0) Persist user turn FIRST (single message with \n intact)
       // ------------------------------------------------------------------
-      const userSaves = await Promise.allSettled(
-        messages.map((m) => this.chatRepository.saveMessage(tenantId, userId, "user", m))
-      );
-      const userSaved = userSaves.filter((r) => r.status === "fulfilled").length;
-      const userFailed = userSaves.length - userSaved;
-      console.info("💾 user turns persisted (pre-LLM):", {
-        total: userSaves.length,
-        persisted: userSaved,
-        failed: userFailed,
-      });
+      try {
+        await this.chatRepository.saveMessage(tenantId, userId, "user", combinedText);
+        console.info("💾 user turn persisted (pre-LLM):", {
+          len: combinedText.length,
+          lines: combinedText.split(/\r?\n/).length,
+        });
+      } catch (e) {
+        console.warn("⚠️ user persist failed:", (e as Error)?.message);
+      }
 
-      // ---- Last user message drives the turn ----
-      const lastMessage = messages[messages.length - 1];
+      // ---- Last user message drives the turn (keep \n) ----
+      const lastMessage = combinedText;
       console.info("💬 lastMessage:", trunc(lastMessage));
+      console.info("💬 lastMessage:", lastMessage);
 
-      // ---- WhatsApp secrets in parallel (doesn't block prompt prep) ----
+      // ---- WhatsApp secrets in parallel ----
       const waSecretsPromise = getWhatsappSecrets(tenantId);
 
       // ------------------------------------------------------------------
-      // 1) Read memory object + recent history (like index)
+      // 1) Read memory object + recent history (after persisting user turn)
       // ------------------------------------------------------------------
       const [{ memory: memObj }, history] = await Promise.all([
         this.memoryRepository.getMemory(tenantId, userId), // object for facts header
-        this.chatRepository.getRecentHistory(tenantId, userId, 10), // for recent window
+        this.chatRepository.getRecentHistory(tenantId, userId, 10), // recent window (includes just-saved user turn)
       ]);
 
       // ------------------------------------------------------------------
@@ -124,10 +104,12 @@ export class ChatService {
       // ------------------------------------------------------------------
       const state = await wf.run(lastMessage, factsHeader, recentWindow);
       const reply = (state?.final_answer ?? "").trim();
+      const identify_intent = !!state?.decision?.identify_intent;
+      const confidence = Number(state?.decision?.confidence ?? 0);
 
       console.info("🧭 LLM decision:", {
-        identify_intent: !!state?.decision?.identify_intent,
-        confidence: Number(state?.decision?.confidence ?? 0),
+        identify_intent,
+        confidence,
         finalLen: reply.length,
         finalSample: trunc(reply, 160),
       });
@@ -138,7 +120,7 @@ export class ChatService {
       }
 
       // ------------------------------------------------------------------
-      // 4) Send WhatsApp (index prints; here we send)
+      // 4) Send WhatsApp
       // ------------------------------------------------------------------
       try {
         const waSecrets = await waSecretsPromise;
@@ -161,13 +143,35 @@ export class ChatService {
       }
 
       // ------------------------------------------------------------------
-      // 5) Persist agent reply (match index timing — after successful LLM)
+      // 5) Persist agent reply
       // ------------------------------------------------------------------
       try {
         await this.chatRepository.saveMessage(tenantId, userId, "agent", reply);
         console.info("💾 agent turn persisted:", { len: reply.length });
       } catch (e) {
         console.warn("⚠️ agent persist failed:", (e as Error)?.message);
+      }
+
+      // ------------------------------------------------------------------
+      // 6) PostOps NO bloqueante (regex/LLM facts + short summary)
+      //     — exactamente como en el index local
+      // ------------------------------------------------------------------
+      try {
+        const postOps = new PostOpsService(this.memoryRepository, this.chatRepository);
+        const last10After = await this.chatRepository.getRecentHistory(tenantId, userId, 10);
+
+        // Dispara en background; no bloquea latencia de usuario.
+        void postOps.run({
+          tenantId,
+          userId,
+          lastUserMessage: lastMessage,
+          last10: last10After,
+          identify_intent,
+          confidence,
+          confidenceThreshold: 0.75, // igual que en index  
+        });
+      } catch (e) {
+        console.warn("⚠️ PostOps launch failed (non-blocking):", (e as Error)?.message);
       }
 
       // ---- Clear buffer item ----
