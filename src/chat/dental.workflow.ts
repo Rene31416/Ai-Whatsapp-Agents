@@ -41,6 +41,7 @@ export class DentalWorkflow {
         default: () => "",
         reducer: (_p, n) => n,
       }),
+      
     });
 
     const wf = new StateGraph(Graph);
@@ -88,7 +89,7 @@ export class DentalWorkflow {
   async run(
     message: string,
     facts_header: string,
-    recent_window: string
+    recent_window: string,
   ): Promise<GraphState> {
     return this.app.invoke({
       message,
