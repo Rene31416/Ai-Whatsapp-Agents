@@ -117,7 +117,6 @@ async function runOnce(input: string): Promise<void> {
       identify_intent,
       confidence,
       confidenceThreshold: 0.75,
-      summaryEvery: 3,
     });
   } catch (e: any) {
     // Reporte claro del sitio del fallo; NO guardamos respuesta del bot
