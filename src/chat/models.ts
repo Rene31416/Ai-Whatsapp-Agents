@@ -65,7 +65,6 @@ export async function getTunedLLM(opts?: {
 }) {
   const base = await getLLM();
   return (base as any).bind?.({
-    temperature: 0.35,
     top_p: 0.9,
     maxOutputTokens: 192,
     responseMimeType: "application/json",
