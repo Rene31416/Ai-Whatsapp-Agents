@@ -95,7 +95,7 @@ export async function decideAndAnswerLite(input: {
   const parser = new JsonOutputParser<Compact>();
   const tuned =
     (base as any).bind?.({
-      temperature: 0.35,
+      temperature: 0.25,
       top_p: 0.9,
       maxOutputTokens: 400,
       responseMimeType: "application/json",
@@ -113,41 +113,50 @@ export async function decideAndAnswerLite(input: {
       ],
     }) ?? base;
 
-  const prompt = new PromptTemplate({
-    inputVariables: [
-      "message",
-      "facts_header",
-      "recent_window",
-      "clinic_compact",
-      "now_iso",
-      "now_human",
-      "tz",
-    ],
-    template: `
+const prompt = new PromptTemplate({
+  inputVariables: [
+    "message",
+    "facts_header",
+    "recent_window",
+    "clinic_compact",
+    "now_iso",
+    "now_human",
+    "tz",
+  ],
+  template: `
 Actúa como asistente de una clínica dental. Responde SIEMPRE en español, tono WhatsApp, 1–2 emojis.
 
-REGLAS DE ESTILO IMPORTANTES:
-- SALUDO Y AUTOPRESENTACIÓN (solo una vez):
-  Puedes saludar y presentarte brevemente (p. ej., “Soy el asistente virtual de Opal Dental Clinic”) ÚNICAMENTE si se cumple TODO:
-  1) VENTANA está vacía (sin líneas), o VENTANA tiene solo líneas de usuario ('U:') y ninguna línea de agente ('A:').
-  2) MSG es un saludo simple (p. ej., “hola”, “buenos días”, “qué tal”) sin otra petición concreta.
-- En cualquier otro caso (existe al menos una 'A:' en VENTANA, o MSG no es un saludo simple), no saludes ni te autopresentes; responde directo al contenido.
+REGLAS DE ESTILO (OBLIGATORIAS):
+- Saluda de vuelta SOLO si el MSG es un saludo simple.
+- Asume que si VENTANA viene vacio debes saludar porque es la primera vez que interactuas con el cliente y debes presentarte
+- Si el MSG NO es saludo simple: NO empieces con “hola”, “buenos días/tardes/noches”, “qué tal”, “hey” (ni variantes) y NO te autopresentes; ve directo a responder.
 - Mantén 2–3 frases, cálidas y concretas.
+
+COMPORTAMIENTO COMO ASISTENTE:
+- Usa solo CLINICA, TIEMPO y FACTS (sin hardcode). Si falta un dato clave, pide la mínima precisión.
+- Si el usuario comparte o pide actualizar nombre/email/teléfono, marca ii=true y confirma con cautela.
+- Fallback breve si la intención no es clara (pide una aclaración mínima para avanzar).
+
+NOTA SOBRE VENTANA:
+- VENTANA contiene hasta N turnos recientes en orden cronológico, con líneas tipo "U:" (usuario) y "A:" (agente).
+- Úsala solo para mantener continuidad (nombres, datos ya dados, evitar repetir preguntas).
+- No cites toda la VENTANA ni repitas saludos previos; responde al MSG actual.
 
 SALIDA ESTRICTA:
 Devuelve SOLO un objeto JSON con estas claves cortas:
 - a: string (1..400 chars, 2–3 frases, cálido)
 - ii: boolean (¿intenta identificar/actualizar nombre/email/teléfono?)
 - c: number (0..1, confianza sobre ii)
-Nada fuera del JSON.
 
 CLINICA: {clinic_compact}
 TIEMPO: {now_iso} | {now_human} ({tz})
 FACTS: {facts_header}
 VENTANA: {recent_window}
 MSG: {message}
+
 `.trim(),
-  });
+});
+
 
   console.info(
     `[decide][in] msg_len=${(input.message || "").length} facts_len=${
@@ -166,6 +175,19 @@ MSG: {message}
     now_human: input.now_human,
     tz: input.tz,
   });
+
+  // después de `const rendered = await prompt.format(...)`:
+  const factsLineMatch = rendered.match(/FACTS:\s*([\s\S]*?)\nVENTANA:/);
+  const factsRendered = factsLineMatch?.[1] ?? "(facts not found)";
+  console.info(
+    `[llm.input/FACTS.line]: "${factsRendered
+      .slice(0, 160)
+      .replace(/\n/g, "\\n")}"`
+  );
+
+  const flagMatch = factsRendered.match(/\[GREET_OK=(true|false)\]/i);
+  console.info("[llm.input/GREET_OK.detected]:", flagMatch?.[1] ?? "(missing)");
+
   const tRender = process.hrtime.bigint();
 
   // Log de entrada al LLM (snippet y longitudes)
