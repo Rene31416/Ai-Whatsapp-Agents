@@ -37,7 +37,11 @@ export class ChatRepository {
     );
   }
 
-  async getRecentHistory(tenantId: string, userId: string, limit = 10):Promise<any[]>{
+  async getRecentHistory(
+    tenantId: string,
+    userId: string,
+    limit = 10
+  ): Promise<any[]> {
     const PK = `TENANT#${tenantId}#USER#${userId}`;
     const res = await this.client.send(
       new QueryCommand({
@@ -53,7 +57,23 @@ export class ChatRepository {
       res.Items?.map((item) => ({
         role: item.role.S,
         message: item.message.S,
+        timestamp: item.timestamp?.S,
       })).reverse() ?? []
     );
+  }
+
+  /**
+   * Returns true if 8 hours have passed from `sinceIso` to now.
+   * @param sinceIso ISO-8601 timestamp (e.g. "2025-10-23T08:15:00.000Z")
+   * @param now Optional override for "current" time (useful in tests)
+   */
+  public hasEightHoursElapsed(
+    sinceIso: string,
+    now: Date = new Date()
+  ): boolean {
+    const since = new Date(sinceIso);
+    if (Number.isNaN(since.getTime())) return false; // invalid input → false
+    const diffMs = now.getTime() - since.getTime(); // negative if since is in the future
+    return diffMs >= 8 * 60 * 60 * 1000; // 8 hours in ms
   }
 }
