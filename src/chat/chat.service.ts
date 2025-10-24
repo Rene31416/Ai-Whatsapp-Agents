@@ -64,7 +64,12 @@ export class ChatService {
       // 0) Persist user turn FIRST (single message with \n intact)
       // ------------------------------------------------------------------
       try {
-        await this.chatRepository.saveMessage(tenantId, userId, "user", combinedText);
+        await this.chatRepository.saveMessage(
+          tenantId,
+          userId,
+          "user",
+          combinedText
+        );
         console.info("💾 user turn persisted (pre-LLM):", {
           len: combinedText.length,
           lines: combinedText.split(/\r?\n/).length,
@@ -89,11 +94,25 @@ export class ChatService {
         this.chatRepository.getRecentHistory(tenantId, userId, 10), // recent window (includes just-saved user turn)
       ]);
 
+      // history is oldest → newest because of .reverse()
+      const lastAgent = [...history].reverse().find((h) => h.role === "agent");
+      const ts = lastAgent?.timestamp ?? "";
+
+      const greetOk = lastAgent
+        ? this.chatRepository.hasEightHoursElapsed(lastAgent.timestamp ?? "")
+        : true;
+      console.info("[greet] lastAgentAt:", ts || "(none)");
+      if (ts) {
+        const diffH = (Date.now() - new Date(ts).getTime()) / 3_600_000;
+        console.info("[greet] hoursSinceLastAgent:", diffH.toFixed(2));
+      }
+      console.info("[greet] GREET_OK:", greetOk);
       // ------------------------------------------------------------------
       // 2) Build 3-block inputs
       // ------------------------------------------------------------------
-      const factsHeader = buildFactsHeader(memObj);              // PERFIL: Nombre=… | Tel=… | Email=…
-      const recentWindow = buildRecentWindow(history, 8, 1600);  // U:/A: compact lines
+      const factsHeader = buildFactsHeader(memObj, greetOk); // PERFIL: Nombre=… | Tel=… | Email=…
+      console.info("[greet] factsHeader.prefix:", factsHeader.slice(0, 60));
+      const recentWindow = buildRecentWindow(history, 8, 1600); // U:/A: compact lines
       console.info("[flow][mem]", {
         facts_len: factsHeader.length,
         recent_len: recentWindow.length,
@@ -116,7 +135,9 @@ export class ChatService {
 
       if (!reply) {
         // Fail-fast: do not send WA; let SQS retry
-        throw new Error("EMPTY_REPLY(service): final_answer vacío tras workflow.");
+        throw new Error(
+          "EMPTY_REPLY(service): final_answer vacío tras workflow."
+        );
       }
 
       // ------------------------------------------------------------------
@@ -157,8 +178,15 @@ export class ChatService {
       //     — exactamente como en el index local
       // ------------------------------------------------------------------
       try {
-        const postOps = new PostOpsService(this.memoryRepository, this.chatRepository);
-        const last10After = await this.chatRepository.getRecentHistory(tenantId, userId, 10);
+        const postOps = new PostOpsService(
+          this.memoryRepository,
+          this.chatRepository
+        );
+        const last10After = await this.chatRepository.getRecentHistory(
+          tenantId,
+          userId,
+          10
+        );
 
         // Dispara en background; no bloquea latencia de usuario.
         void postOps.run({
@@ -168,10 +196,13 @@ export class ChatService {
           last10: last10After,
           identify_intent,
           confidence,
-          confidenceThreshold: 0.75, // igual que en index  
+          confidenceThreshold: 0.75, // igual que en index
         });
       } catch (e) {
-        console.warn("⚠️ PostOps launch failed (non-blocking):", (e as Error)?.message);
+        console.warn(
+          "⚠️ PostOps launch failed (non-blocking):",
+          (e as Error)?.message
+        );
       }
 
       // ---- Clear buffer item ----
