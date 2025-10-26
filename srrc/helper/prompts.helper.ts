@@ -1,33 +1,58 @@
-// src/helpers/chat.helpers.ts
-//
-// Small pure helpers used by ChatService + workflow prompts.
-// Keep them dependency-free so they're easy to test and reuse.
+// src/helper/prompts.helper.ts
+// Helpers to build:
+//  - a compact "facts header" line the LLM can read
+//  - a recent conversation window (U:/A: ...)
 
-import type { MemoryObject } from "../chat/memory.repository";
+import { MemoryObject } from "../chat/memory.repository";
 
 /**
- * Build the compact "facts" header line that prepends prompts.
+ * Build the "FACTS:" string we pass to the LLM.
+ * Includes greet flag and the user's known contact info.
+ *
  * Example:
- *   [GREET_OK=true] PERFIL: Nombre=Michael | Tel=? | Email=?
+ *   "[GREET_OK=true] CONTACT: Name=Michael | Phone=503... | Email=mike@x.com | TZ=CST"
+ *
+ * Rules:
+ * - If a field is missing/undefined, use "?" so the model sees it's unknown.
+ * - Null means "user said this should be cleared", we surface that as "null".
  */
 export function buildFactsHeader(
   mem: MemoryObject | undefined,
   greetOk: boolean
 ): string {
-  const name  = mem?.profile?.name  ?? "?";
-  const phone = mem?.contact?.phone ?? "?";
-  const email = mem?.contact?.email ?? "?";
+  const cp = mem?.contactProfile;
 
+  // normalize each piece as a short printable string
+  const name =
+    cp && "name" in cp ? (cp.name === null ? "null" : cp.name ?? "?") : "?";
+
+  const phone =
+    cp && "phone" in cp ? (cp.phone === null ? "null" : cp.phone ?? "?") : "?";
+
+  const email =
+    cp && "email" in cp ? (cp.email === null ? "null" : cp.email ?? "?") : "?";
+
+  const tz =
+    cp && "timezoneHint" in cp
+      ? cp.timezoneHint === null
+        ? "null"
+        : cp.timezoneHint ?? "?"
+      : "?";
+
+  // We keep the GREET_OK flag first because the LLM logic uses it
+  // to decide whether to re-greet / introduce itself.
   const prefix = `[GREET_OK=${greetOk ? "true" : "false"}]`;
-  const perfil = `PERFIL: Nombre=${name} | Tel=${phone} | Email=${email}`;
-  return `${prefix} ${perfil}`;
+
+  // Keep this compact and stable; the LLM prompt refers to "FACTS:"
+  const contactLine = `CONTACT: Name=${name} | Phone=${phone} | Email=${email} | TZ=${tz}`;
+
+  return `${prefix} ${contactLine}`;
 }
 
 /**
- * Build a compact recent conversation window in "U:/A:" lines.
- * - Takes the last k turns
- * - Normalizes whitespace per line
- * - Truncates to maxChars from the end (most recent content)
+ * Build a compact rolling window of recent turns for context.
+ * We only include the last `k` messages, label them as U:/A:,
+ * collapse whitespace, and trim total length.
  */
 export function buildRecentWindow(
   turns: Array<{ role: "user" | "agent"; message: string }>,
@@ -35,16 +60,20 @@ export function buildRecentWindow(
   maxChars = 1600
 ): string {
   const lastK = (turns ?? []).slice(-k);
-  const lines = lastK.map((t) =>
-    `${t.role === "user" ? "U" : "A"}: ${String(t.message ?? "")
+
+  const lines = lastK.map((t) => {
+    const roleTag = t.role === "user" ? "U" : "A";
+    const cleaned = String(t.message ?? "")
       .replace(/\s+/g, " ")
-      .trim()}`
-  );
+      .trim();
+    return `${roleTag}: ${cleaned}`;
+  });
 
   let joined = lines.join("\n");
   if (joined.length > maxChars) {
-    // Keep the most recent tail if over limit
+    // keep the tail (most recent context is more relevant)
     joined = joined.slice(-maxChars);
   }
+
   return joined;
 }

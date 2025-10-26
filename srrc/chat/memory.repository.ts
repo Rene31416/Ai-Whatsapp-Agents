@@ -8,19 +8,38 @@ import {
 import { injectable, inject } from "inversify";
 import { Logger } from "@aws-lambda-powertools/logger";
 
-/** Structured long-term memory model used in prompts */
-export interface MemoryObject {
-  profile?: { name?: string };
-  contact?: { phone?: string | null; email?: string | null };
+/**
+ * Contact info we store for a given user.
+ * Each field is optional.
+ * null means "explicitly cleared".
+ */
+export interface ContactProfile {
+  name?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  timezoneHint?: string | null;
 }
 
-/** Optional short-term memory blob */
+/**
+ * Full memory blob we persist in Dynamo under the "memory" attribute.
+ * We can extend this later with more sections (preferences, etc.).
+ */
+export interface MemoryObject {
+  contactProfile?: ContactProfile;
+  // future: preferences?: { ... }
+  // future: notes?: string;
+}
+
+/**
+ * Optional short-term summary (you were already storing this).
+ * We keep it because getMemory() was already returning it, even
+ * if we're not actively updating it right now.
+ */
 export interface ShortTermMemory {
   summary?: string;
   windowSize?: number;
   lastTurnAt?: string;
 }
-
 @injectable()
 export class MemoryRepository {
   private client = new DynamoDBClient({});
@@ -67,10 +86,22 @@ export class MemoryRepository {
     return { memory, stMemory, version };
   }
 
+
   /**
-   * Merge field-level delta into structured memory (server-side upsert).
-   * - Accepts `null` to explicitly clear fields.
-   * - Reads current, merges client-side, and writes full "memory" map atomically.
+   * mergeMemoryDelta
+   *
+   * Deep-merges a partial patch into the user's existing memory and writes it back.
+   *
+   * Rules:
+   * - `delta` is a partial object shaped like { contactProfile?: { ... } }.
+   * - Any field set to `null` means "clear that field".
+   * - Fields that are not present in `delta` remain untouched.
+   *
+   * This method:
+   *   1. Reads current memory
+   *   2. Applies a deep merge (respecting null to clear)
+   *   3. Writes the new full memory map to DynamoDB
+   *   4. Bumps `version` and `updatedAt`
    */
   async mergeMemoryDelta(
     tenantId: string,
@@ -82,7 +113,10 @@ export class MemoryRepository {
       return;
     }
 
+    // 1. Read current memory
     const { memory: current } = await this.getMemory(tenantId, userId);
+
+    // 2. Merge in-memory
     const merged = deepMerge(current ?? {}, delta);
 
     const Key = this.key(tenantId, userId);
@@ -93,12 +127,16 @@ export class MemoryRepository {
       preview: safePreview(merged),
     });
 
+    // 3. Persist full merged memory back to Dynamo
     await this.client.send(
       new UpdateItemCommand({
         TableName: this.tableName,
         Key,
         UpdateExpression: "SET #m = :m, updatedAt = :now ADD #v :one",
-        ExpressionAttributeNames: { "#m": "memory", "#v": "version" },
+        ExpressionAttributeNames: {
+          "#m": "memory",
+          "#v": "version",
+        },
         ExpressionAttributeValues: {
           ":m": toAttr(merged),
           ":now": { S: now },
