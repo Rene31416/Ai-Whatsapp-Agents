@@ -1,87 +1,125 @@
 // src/chat/postops.service.ts
-import { MemoryRepository, MemoryObject } from "./memory.repository";
-import { ChatRepository } from "./chat.repository";
-import { extractFactsDeterministic, seemsLikeIdentityIntent } from "./facts.extractor";
-import { extractClientFacts } from "../prompts/facts.prompt";
 
-type RunArgs = {
+import { injectable, inject } from "inversify";
+import { Logger } from "@aws-lambda-powertools/logger";
+
+import { ChatRepository } from "../chat/chat.repository";
+import { MemoryRepository } from "../chat/memory.repository";
+
+import {
+  ContactFactsExtractorService,
+  ContactProfilePatch,
+} from "../prompts/facts.prompt";
+
+export type RunArgs = {
   tenantId: string;
   userId: string;
   lastUserMessage: string;
-  last10: Array<{ role: "user" | "agent"; message: string }>;
-  identify_intent: boolean;   // flag del workflow (ii)
-  confidence: number;         // 0..1
-  confidenceThreshold?: number; // default 0.75
+  identify_intent: boolean;        // main workflow says: "user is giving personal/contact info"
+  confidence: number;              // workflow confidence in [0..1]
+  confidenceThreshold?: number;    // default 0.75
 };
 
+/**
+ * PostOpsService
+ *
+ * After we've replied to the user, we may want to update long-term memory
+ * with new/updated contact info (name, phone, email, timezoneHint).
+ *
+ * - We ONLY call the LLM extractor if identify_intent === true AND
+ *   confidence >= confidenceThreshold.
+ * - We only use the most recent user message (not full chat history).
+ * - We never throw; ChatService should not fail because of this.
+ */
+@injectable()
 export class PostOpsService {
   constructor(
-    private memRepo: MemoryRepository,
-    private chatRepo: ChatRepository
+    @inject(MemoryRepository)
+    private readonly memRepo: MemoryRepository,
+
+    @inject(ChatRepository)
+    private readonly chatRepo: ChatRepository,
+
+    @inject(ContactFactsExtractorService)
+    private readonly factsExtractor: ContactFactsExtractorService,
+
+    @inject(Logger)
+    private readonly log: Logger
   ) {}
 
+  /**
+   * Attempt to extract user contact/profile info from the last message
+   * and persist it to memory.
+   */
   async run(args: RunArgs): Promise<void> {
     const {
       tenantId,
       userId,
       lastUserMessage,
-      last10,
       identify_intent,
       confidence,
       confidenceThreshold = 0.75,
     } = args;
 
     try {
-      // 0) Log de entrada para depuración fina
-      const byRegexSmell = seemsLikeIdentityIntent(lastUserMessage);
-      const byLLMFlag = identify_intent && confidence >= confidenceThreshold;
-      console.info(
-        "[postops][in] ii=%s conf=%s thr=%s byLLM=%s byRegex=%s",
-        identify_intent,
-        confidence.toFixed(2),
-        confidenceThreshold.toFixed(2),
-        byLLMFlag,
-        byRegexSmell
-      );
+      const shouldRunLLM =
+        identify_intent && confidence >= confidenceThreshold;
 
-      // 1) Intento determinista (regex) SOLO para extraer valores inmediatos del último mensaje
-      const det = extractFactsDeterministic(lastUserMessage);
-      if (Object.keys(det).length) {
-        await this.memRepo.mergeMemoryDelta(
-          tenantId,
-          userId,
-          det as Partial<MemoryObject>
-        );
-        console.info("[postops][facts][regex] merged", det);
-      } else {
-        // 2) Si el workflow marcó intención con buena confianza O el regex "huele" intención,
-        //    disparamos el extractor LLM sobre la ventana reciente.
-        if (byLLMFlag || byRegexSmell) {
-          const llmFacts = await extractClientFacts({ last10 });
-          if (llmFacts && Object.keys(llmFacts).length) {
-            await this.memRepo.mergeMemoryDelta(
-              tenantId,
-              userId,
-              llmFacts as Partial<MemoryObject>
-            );
-            console.info("[postops][facts][llm] merged", llmFacts);
-          } else {
-            console.info("[postops][facts] none (LLM returned empty)");
-          }
-        } else {
-          console.info(
-            "[postops][facts] skip (reasons): byLLM=%s byRegex=%s",
-            byLLMFlag,
-            byRegexSmell
-          );
-        }
+      this.log.info("postops.start", {
+        tenantId,
+        userId,
+        identify_intent,
+        confidence,
+        confidenceThreshold,
+        shouldRunLLM,
+      });
+
+      if (!shouldRunLLM) {
+        this.log.info("postops.skip", {
+          reason: "gate_not_passed",
+        });
+        return;
       }
 
-      // 3) (REMOVIDO) Short-term summary: No se usa, no se invoca ni se escribe.
-      //    — Eliminado para ahorrar latencia y tokens.
+      // Ask the LLM to extract contact info (name/phone/email/timezoneHint)
+      // from ONLY this last user message.
+      const patch: ContactProfilePatch =
+        await this.factsExtractor.extractFromMessage(lastUserMessage);
 
-    } catch (e) {
-      console.warn("⚠️ postops.run error:", (e as Error)?.message);
+      if (!patch || Object.keys(patch).length === 0) {
+        this.log.info("postops.no_patch", {
+          reason: "extractor_empty",
+        });
+        return;
+      }
+
+      // Merge patch into long-term memory in DynamoDB.
+      // mergeMemoryDelta() deep-merges only mentioned fields,
+      // so we won't overwrite other data accidentally.
+      await this.memRepo.mergeMemoryDelta(tenantId, userId, patch);
+
+      this.log.info("postops.merged", {
+        mergedPreview: safePreview(patch),
+      });
+    } catch (err) {
+      // Swallow errors so the main ChatService flow isn't affected.
+      this.log.warn("postops.error", {
+        msg: (err as Error)?.message,
+        stackTop: (err as Error)?.stack?.split("\n")[0],
+      });
     }
+  }
+}
+
+/**
+ * safePreview
+ * Produces a short JSON preview string for logs without throwing.
+ */
+function safePreview(obj: unknown): string {
+  try {
+    const s = JSON.stringify(obj);
+    return s.length > 200 ? s.slice(0, 200) + "…" : s;
+  } catch {
+    return "[unserializable]";
   }
 }

@@ -1,92 +1,88 @@
-import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
-import axios from "axios";
 import { injectable, inject } from "inversify";
 import { Logger } from "@aws-lambda-powertools/logger";
+import axios from "axios";
+import {
+  SecretsManagerClient,
+  GetSecretValueCommand,
+} from "@aws-sdk/client-secrets-manager";
 
-/** Minimal shape for WhatsApp credentials loaded from Secrets Manager */
-export type WhatsappSecrets = {
+export interface WhatsappSecrets {
   WHATSAPP_ACCESS_TOKEN: string;
   WHATSAPP_PHONE_NUMBER_ID: string;
-  VERIFY_TOKEN: string;
-};
-
-/** Interface kept tiny for easy mocking in tests */
-export interface IWhatsappService {
-  /**
-   * Load and cache WA credentials for a tenant (phoneNumberId in your current design).
-   * Throws if any required field is missing.
-   */
-  getSecrets(phoneNumberId?: string): Promise<WhatsappSecrets>;
-
-  /**
-   * Send a WhatsApp text message via WA Cloud API.
-   * Throws on non-2xx responses.
-   */
-  sendText(toWaId: string, text: string, secrets: WhatsappSecrets): Promise<void>;
+  VERIFY_TOKEN?: string;
 }
 
 @injectable()
-export class WhatsappService implements IWhatsappService {
-  // In-memory cache by tenant key ("default" or specific phoneNumberId)
-  private cache: Record<string, WhatsappSecrets> = {};
-
-  // AWS clients are lightweight; keeping one instance per class is fine
-  private sm = new SecretsManagerClient({});
-
-  // Base ARN/prefix to construct secret ARNs (e.g., `${baseArn}${phoneNumberId}`)
-  private baseArn = process.env.WHATSAPP_SECRET_ARN!;
-
+export class WhatsappService {
   constructor(@inject(Logger) private readonly log: Logger) {}
 
   /**
-   * Get WhatsApp secrets for a given tenant/phoneNumberId.
-   * - Uses local in-memory cache first.
-   * - If `phoneNumberId` is omitted, uses `${baseArn}default` (useful for handshakes).
-   * - Logs only meta (no secret values).
+   * Return WhatsApp API credentials for a given tenant.
+   *
+   * In Lambda:
+   *   - Fetches from Secrets Manager: `${WHATSAPP_SECRET_ARN}${tenantId}`
+   *
+   * In local dev (LOCAL_DRY_RUN === "true"):
+   *   - Does NOT call Secrets Manager
+   *   - Returns dummy-but-shaped creds from local env vars
+   *     so that the rest of the pipeline keeps running.
    */
-  async getSecrets(phoneNumberId?: string): Promise<WhatsappSecrets> {
-    if (!this.baseArn) {
-      // Fail fast if env is not configured; this is a deployment/config issue
+  async getSecrets(tenantId: string): Promise<WhatsappSecrets> {
+    // Local dry-run path: don't talk to AWS SM
+    if (process.env.LOCAL_DRY_RUN === "true") {
+      const localToken =
+        process.env.LOCAL_WHATSAPP_ACCESS_TOKEN ?? "DUMMY_TOKEN_LOCAL";
+      const localPhoneId =
+        process.env.LOCAL_WHATSAPP_PHONE_NUMBER_ID ?? "DUMMY_PHONE_LOCAL";
+
+      this.log.info("whatsapp.secrets.local", {
+        tenantId,
+        phoneIdSuffix: localPhoneId.slice(-6),
+      });
+
+      return {
+        WHATSAPP_ACCESS_TOKEN: localToken,
+        WHATSAPP_PHONE_NUMBER_ID: localPhoneId,
+        VERIFY_TOKEN: process.env.LOCAL_WHATSAPP_VERIFY_TOKEN ?? "DUMMY_VERIFY",
+      };
+    }
+
+    // Lambda / real path
+    const baseArn = process.env.WHATSAPP_SECRET_ARN;
+    if (!baseArn) {
       throw new Error("WHATSAPP_SECRET_ARN env is required");
     }
 
-    const cacheKey = phoneNumberId || "default";
-    const cached = this.cache[cacheKey];
-    if (cached) {
-      // Cache hit: avoid Secrets Manager latency/cost
-      this.log.info("wa.secrets.cache.hit", { cacheKey });
-      return cached;
-    }
+    const secretArn = `${baseArn}${tenantId}`;
 
-    // Build the concrete secret ARN from the base plus tenant suffix
-    const secretArn = phoneNumberId ? `${this.baseArn}${phoneNumberId}` : `${this.baseArn}default`;
+    const client = new SecretsManagerClient({});
+    const res = await client.send(
+      new GetSecretValueCommand({ SecretId: secretArn })
+    );
 
-    this.log.info("wa.secrets.fetch.start", { cacheKey });
-
-    // Read from Secrets Manager (single Get is enough)
-    const res = await this.sm.send(new GetSecretValueCommand({ SecretId: secretArn }));
     if (!res.SecretString) {
-      // Rare but explicit: secret exists but has no payload
-      throw new Error(`Empty secret for ${cacheKey}`);
+      throw new Error("Empty secret value from Secrets Manager");
     }
 
-    // Parse JSON and validate the expected keys
-    const raw = JSON.parse(res.SecretString);
+    const parsed = JSON.parse(res.SecretString);
+
     const secrets: WhatsappSecrets = {
-      WHATSAPP_ACCESS_TOKEN: raw.WHATSAPP_ACCESS_TOKEN,
-      WHATSAPP_PHONE_NUMBER_ID: raw.WHATSAPP_PHONE_NUMBER_ID,
-      VERIFY_TOKEN: raw.VERIFY_TOKEN,
+      WHATSAPP_ACCESS_TOKEN: parsed.WHATSAPP_ACCESS_TOKEN,
+      WHATSAPP_PHONE_NUMBER_ID: parsed.WHATSAPP_PHONE_NUMBER_ID,
+      VERIFY_TOKEN: parsed.VERIFY_TOKEN,
     };
 
-    if (!secrets.WHATSAPP_ACCESS_TOKEN || !secrets.WHATSAPP_PHONE_NUMBER_ID) {
-      // Fail fast: misconfigured secret should be fixed in infra, not retried forever
-      throw new Error(`Missing WA fields in secret for ${cacheKey}`);
+    if (
+      !secrets.WHATSAPP_ACCESS_TOKEN ||
+      !secrets.WHATSAPP_PHONE_NUMBER_ID
+    ) {
+      throw new Error(
+        `Missing required WhatsApp fields in secret for tenant ${tenantId}`
+      );
     }
 
-    // Cache and log minimal meta (never log token values)
-    this.cache[cacheKey] = secrets;
-    this.log.info("wa.secrets.fetch.ok", {
-      cacheKey,
+    this.log.info("whatsapp.secrets.fetched", {
+      tenantId,
       phoneIdSuffix: secrets.WHATSAPP_PHONE_NUMBER_ID.slice(-6),
     });
 
@@ -94,42 +90,49 @@ export class WhatsappService implements IWhatsappService {
   }
 
   /**
-   * Send a plain text message through WhatsApp Cloud API.
-   * - Uses axios for timeout control (15s).
-   * - Truncates body to 4096 chars (API safety).
-   * - Logs success/failure without exposing PII or token contents.
+   * Send a WhatsApp text message.
+   *
+   * If LOCAL_DRY_RUN === "true", we DO NOT call the WhatsApp API.
+   * We just log what would've been sent.
    */
-  async sendText(toWaId: string, text: string, secrets: WhatsappSecrets): Promise<void> {
-    // Endpoint for the tenant’s phone number id
-    const url = `https://graph.facebook.com/v20.0/${secrets.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+  async sendText(
+    toWaId: string,
+    text: string,
+    creds: WhatsappSecrets
+  ): Promise<void> {
+    // Local dry-run: don't hit Meta API
+    if (process.env.LOCAL_DRY_RUN === "true") {
+      this.log.info("whatsapp.dry_run", {
+        to: toWaId,
+        len: text.length,
+        preview: text.slice(0, 120),
+      });
+      return;
+    }
 
-    // WhatsApp payload for a simple text message
-    const body = {
+    // Real send
+    const apiUrl = `https://graph.facebook.com/v20.0/${creds.WHATSAPP_PHONE_NUMBER_ID}/messages`;
+
+    const payload = {
       messaging_product: "whatsapp",
       to: toWaId,
       type: "text",
-      text: { body: (text ?? "").slice(0, 4096) }, // defensive limit
+      text: { body: text.slice(0, 4096) },
     };
 
-    try {
-      await axios.post(url, body, {
-        headers: {
-          Authorization: `Bearer ${secrets.WHATSAPP_ACCESS_TOKEN}`, // secure header; never log
-          "Content-Type": "application/json",
-        },
-        timeout: 15000, // keep user latency reasonable and fail fast on networking issues
-      });
+    const headers = {
+      Authorization: `Bearer ${creds.WHATSAPP_ACCESS_TOKEN}`,
+      "Content-Type": "application/json",
+    };
 
-      // Minimal, useful logging; avoid logging the full message content
-      this.log.info("wa.send.ok", {
-        to: toWaId,
-        len: body.text.body.length,
-      });
-    } catch (e: any) {
-      // Extract a readable message while avoiding large response dumps
-      const errMsg = e?.response?.data || e?.message || "unknown-error";
-      this.log.error("wa.send.fail", { to: toWaId, err: errMsg });
-      throw e;
-    }
+    const response = await axios.post(apiUrl, payload, {
+      headers,
+      timeout: 15000,
+    });
+
+    this.log.info("whatsapp.sent.ok", {
+      to: toWaId,
+      httpStatus: response.status,
+    });
   }
 }
