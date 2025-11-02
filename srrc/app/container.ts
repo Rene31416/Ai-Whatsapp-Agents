@@ -12,6 +12,8 @@ import { MemoryRepository } from "../chat/memory.repository";
 import { WhatsappService } from "../services/whatsapp.service";
 import { PostOpsService } from "../services/post.ops.service";
 import { ContactFactsExtractorService } from "../prompts/facts.prompt";
+import { CalendarPromptService } from "../prompts/calendar.prompt";
+import { DentalWorkflow } from "../workflow/main.workflow";
 // import { DentalWorkflow } from "../chat/dental.workflow";
 
 const container = new Container({ defaultScope: "Singleton" });
@@ -26,7 +28,10 @@ container.bind(ChatService).toSelf();
 // Controllers / misc
 container.bind(WhatsappController).toSelf();
 container.bind(ConsoleLogger).toSelf();
-container.bind(ContactFactsExtractorService).toSelf()
+container.bind(ContactFactsExtractorService).toSelf();
+container.bind(CalendarPromptService).toSelf();
+container.bind(DentalWorkflow).toSelf()
+
 // container.bind(DentalWorkflow).toSelf(); // still constructed manually in ChatService
 
 // Shared Logger instance
