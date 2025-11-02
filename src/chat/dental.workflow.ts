@@ -70,13 +70,6 @@ export class DentalWorkflow {
       tz,
     });
 
-    if (!decision.final_answer || !decision.final_answer.trim()) {
-      // Sin fallback: error explícito
-      throw new Error(
-        "EMPTY_FINAL_ANSWER(wf.decide): El modelo devolvió final_answer vacío tras validación."
-      );
-    }
-
     console.info(
       `[wf.decide][out] fa_len=${decision.final_answer.length} intent=${
         decision.identify_intent
