@@ -27,6 +27,7 @@ export class WhatsappService {
    *   - Returns dummy-but-shaped creds from local env vars
    *     so that the rest of the pipeline keeps running.
    */
+  
   async getSecrets(tenantId: string): Promise<WhatsappSecrets> {
     // Local dry-run path: don't talk to AWS SM
     if (process.env.LOCAL_DRY_RUN === "true") {
