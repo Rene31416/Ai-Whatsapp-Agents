@@ -15,6 +15,7 @@ type GraphState = {
 @injectable()
 export class DentalWorkflow {
   private app: any;
+  
 
   constructor(
     @inject(CalendarPromptService)
