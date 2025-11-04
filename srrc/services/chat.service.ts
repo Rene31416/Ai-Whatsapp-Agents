@@ -166,7 +166,7 @@ export class ChatService {
   private async buildWindows(job: ChatJob): Promise<Windows> {
     const [{ memory }, history] = await Promise.all([
       this.memoryRepository.getMemory(job.tenantId, job.userId),
-      this.chatRepository.getRecentHistory(job.tenantId, job.userId, 10),
+      this.chatRepository.getRecentHistory(job.tenantId, job.userId, 20),
     ]);
 
     const lastAgent = [...history].reverse().find((h) => h.role === "agent");
@@ -175,7 +175,7 @@ export class ChatService {
       : true;
 
     const factsHeader = buildFactsHeader(memory, greetOk);
-    const recentWindow = buildRecentWindow(history, 8, 1600);
+    const recentWindow = buildRecentWindow(history, 20, 3200);
 
     this.log.info("chat.windows.ready", {
       facts_len: factsHeader.length,

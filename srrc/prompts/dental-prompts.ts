@@ -7,14 +7,12 @@ import { JsonOutputParser } from "@langchain/core/output_parsers";
 // We keep final_answer / identify_intent / confidence for backwards compat
 // AND we surface the scheduling metadata so we can branch later.
 export const DecisionLiteSchema = z.object({
-  final_answer: z
-    .string()
-    .max(400, "final_answer excede 400 chars"),
+  final_answer: z.string().max(400, "final_answer excede 400 chars"),
 
   identify_intent: z.boolean(), // <- maps from ii (did user give contact info?)
   confidence: z.number().min(0).max(1), // <- maps from c
 
-  isCalendar: z.boolean()
+  isCalendar: z.boolean(),
   // readyToSchedule: z.boolean(),
 
   // appt: z.object({
@@ -34,7 +32,7 @@ const CompactSchema = z.object({
   a: z.string().max(400), // WhatsApp answer
   ii: z.boolean(), // did user give/update THEIR contact info this turn?
   c: z.number().min(0).max(1), // confidence in ii
-  isCalendar: z.boolean()
+  isCalendar: z.boolean(),
 
   // appt: z.object({
   //   procedure: z.string().min(1).max(100).nullable(),
@@ -90,6 +88,19 @@ function getFinishReason(msg: any): string | undefined {
   );
 }
 
+function stripJsonFences(s: string): string {
+  const fenced = s.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) return fenced[1].trim();
+  return s.trim();
+}
+
+function rescueJsonSlice(s: string): string | null {
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first >= 0 && last > first) return s.slice(first, last + 1);
+  return null;
+}
+
 function ms(from: bigint, to: bigint) {
   return Number(to - from) / 1e6;
 }
@@ -142,7 +153,7 @@ export async function decideAndAnswerLite(input: {
   // PROMPT TEMPLATE (SYSTEM INSTRUCTIONS)
   // =========================================
 
-
+  // ---------- MAIN (ROUTER) PROMPT ----------
 const prompt = new PromptTemplate({
   inputVariables: [
     "message",
@@ -156,10 +167,25 @@ const prompt = new PromptTemplate({
   template: `
 Responde SIEMPRE en español, estilo WhatsApp, con máximo 1–2 emojis. Soná natural, cero callcenter.
 
-SALUDO / PRESENTACIÓN (controlado por FACTS):
-- FACTS puede traer [GREET_OK=true|false].
-- Si GREET_OK=true: podés saludar brevemente y presentarte UNA sola vez como asistente de la CLÍNICA.
-- Si GREET_OK=false: no saludes ni te presentes otra vez; andá directo al punto.
+⚠️ INSTRUCCIÓN CRÍTICA:
+- Tu respuesta DEBE ser un único objeto JSON con las claves indicadas más abajo. Si agregás texto fuera del JSON, la respuesta se descarta.
+
+SALUDO / PRESENTACIÓN:
+- GREET_OK=true indica que esta es la primera interacción real (o pasaron >8h).
+- GREET_OK=false significa que ya te presentaste antes; no repitas saludo aunque VENTANA muestre saludos previos.
+- Solo saluda y preséntate si GREET_OK=true Y el MENSAJE ACTUAL contiene un saludo (“hola”, “buenos días”, “qué tal”, etc.).
+- Si GREET_OK=false, tu respuesta NO debe contener frases como “Hola”, “Buenas”, “Soy el asistente…”, ni ninguna presentación nueva; empieza directo con el contenido útil.
+- Respuestas que violen lo anterior (ej. “¡Hola! Soy…”) se consideran INCORRECTAS.
+- Ejemplo GREET_OK=true: usa un saludo breve y natural variando el fraseo (p.ej. “¡Hola! Soy el asistente de Opal Dental 😊 ¿Cómo te ayudo hoy?”, “¡Buenas! Te escribe el asistente virtual de Opal Dental 😊 ¿En qué te apoyo?”, “Hey, soy tu asistente en Opal Dental 😊 ¿Cómo puedo ayudarte?”).
+- Ejemplo GREET_OK=false (consulta directa): Usuario: “Quiero saber la ubicación exacta de la clínica por favor” → Respuesta: “Estamos en 123 Main St, San Salvador. ¿Necesitás algo más?”
+  - Ejemplo INCORRECTO con GREET_OK=false: Usuario: “Otra cosa, ¿sabés agendar citas?” → 🚫 “¡Hola! Soy el asistente…” (no lo repitas).
+  - Ejemplo CORRECTO con GREET_OK=false: Usuario: “Otra cosa, ¿sabés agendar citas?” → “Claro, te ayudo a coordinar tu cita. Déjame verificar qué necesitás.”
+
+COMPORTAMIENTO GENERAL:
+- Si el primer mensaje trae saludo + intención, priorizá la intención. Si es agenda, ruteá (ver abajo) y no respondas localmente.
+- Si el usuario se está despidiendo (p. ej., “gracias, eso sería todo”, “no por ahora”, “adiós”, “hasta luego”), cerrá amable SIN “¿algo más?”.
+- Despedidas: confirma que no falta nada y usa una sola frase amable sin ofrecer ayuda adicional. Variá el fraseo (ej.: “Todo listo, cualquier cosa me avisás 😊”, “Perfecto, quedo atento 😊”) para evitar respuestas calcadas consecutivas.
+- “Gracias” aislado NO es despedida: podés ofrecer ayuda suave.
 
 ROL DE ESTE NODO (Customer Service – información general):
 - Aclarar/resumir lo que el usuario pide en MSG.
@@ -167,10 +193,13 @@ ROL DE ESTE NODO (Customer Service – información general):
 - Detectar si el MENSAJE ACTUAL trae/actualiza datos personales del usuario (ii).
 - Este nodo NO maneja reglas de agenda ni recolecta datos para citas.
 
-RUTEO A AGENDA (único requisito):
-- Si el MSG sugiere o insinúa cualquier acción relacionada con una cita (agendar, reagendar, cancelar, confirmar, consultar disponibilidad), aunque sea ambiguo:
-  - setea "isCalendar": true
-  - y dejá "a": "" (cadena vacía). La respuesta al usuario la dará el agente de calendario.
+RUTEO A AGENDA (criterio por contexto):
+- Seteá "isCalendar": true y dejá "a": "" (cadena vacía) cuando ocurra CUALQUIERA de estas condiciones:
+  1) El MSG sugiere/insinúa acciones de citas (agendar, reagendar, cancelar, confirmar, consultar disponibilidad).
+  2) El MSG APORTA o CORRIGE alguno de los datos mínimos de cita: nombre completo, número de contacto, correo electrónico o doctor preferido.
+  3) Considerando VENTANA + MSG, se continúa claramente un flujo de agenda (p. ej., el turno previo pidió esos datos).
+- Ejemplo de ruteo obligatorio: Usuario: “Otra cosa, ¿sabés agendar citas?” → isCalendar=true y a="".
+
 
 LÍMITES (generales, sin lógica de agenda):
 - No inventes procesos internos ni acceso a sistemas.
@@ -182,6 +211,12 @@ MICROCOPY (tono breve y útil):
 - Si el usuario solo comparte identidad (ii=true) sin pedir agenda: agradecé y dejá puerta abierta (“¡Gracias! Lo tengo anotado 😊 ¿En qué te ayudo?”).
 - Evitá monosílabos secos (“ok”, “listo”) salvo cierre explícito.
 
+PRIORIDAD ENTRE MARCAS:
+- Si en el mismo turno detectás ii=true (datos personales) y también se cumple ruteo de agenda, entonces:
+  - isCalendar=true
+  - a=""
+  - (ii puede quedar en true o false; la orquestación prioriza el ruteo)
+
 VENTANA (orden y alcance):
 - VENTANA contiene los últimos 10 mensajes ANTERIORES al MSG, del más viejo al más reciente (oldest → newest).
 - VENTANA NO incluye MSG. Usá principalmente MSG, y VENTANA solo como apoyo.
@@ -190,13 +225,10 @@ MENSAJE "a" (política de salida):
 - Si "isCalendar" = true → "a" debe ser "" (vacío), porque la respuesta la dará el agente de calendario.
 - Si "isCalendar" = false → "a" debe ser una respuesta breve (máx 2 frases / 400 caracteres), respetando GREET_OK y usando CLÍNICA solo si el MSG lo pidió.
 
-SALIDA ESTRICTA (solo UN objeto JSON válido, sin texto extra ni backticks):
-{{ 
-  "a": string,                 // si isCalendar=true, usar ""
-  "c": number,                 // confianza 0..1
-  "isCalendar": boolean,       // ¿este turno requiere flujo de calendario?
-  "ii": boolean                // ¿este turno trae/actualiza datos personales?
-}}
+SALIDA ESTRICTA (solo UN JSON válido, sin texto extra ni backticks):
+- Devuelve EXACTAMENTE un objeto JSON con estas claves (sustituí los valores según corresponda):
+  {{"a":"...","c":0.7,"isCalendar":false,"ii":false}}
+- No incluyas texto fuera del JSON ni múltiples objetos.
 
 CONTEXTO DISPONIBLE:
 CLÍNICA: {clinic_compact}
@@ -206,8 +238,6 @@ MSG: {message}
 TIEMPO: {now_iso} | {now_human} ({tz})
 `.trim(),
 });
-
-
 
 
   console.info(
@@ -269,10 +299,8 @@ TIEMPO: {now_iso} | {now_human} ({tz})
       320
     )}"`
   );
-  console.log('//////////////////////// VENATABA ////////////////')
-    console.info(
-    `[llm.input/VENTANA] ${input.recent_window}`
-    )
+  console.log("//////////////////////// VENATABA ////////////////");
+  console.info(`[llm.input/VENTANA] ${input.recent_window}`);
 
   // Invoke LLM
   const tInvokeStart = process.hrtime.bigint();
@@ -307,15 +335,16 @@ TIEMPO: {now_iso} | {now_human} ({tz})
   // Raw output
   const fin = getFinishReason(llmOut);
   const rawText = extractAnyText(llmOut) ?? "";
+  const cleanedText = stripJsonFences(rawText);
   console.info(
     `[llm.output] finish=${fin ?? "?"} chars=${
-      rawText.length
-    } preview="${rawText.slice(0, 300).replace(/\n/g, "\\n")}${
-      rawText.length > 300 ? "…" : ""
+      cleanedText.length
+    } preview="${cleanedText.slice(0, 300).replace(/\n/g, "\\n")}${
+      cleanedText.length > 300 ? "…" : ""
     }"`
   );
 
-  if ((!rawText || !rawText.trim()) && fin && fin !== "STOP") {
+  if ((!cleanedText || !cleanedText.trim()) && fin && fin !== "STOP") {
     throw new Error(
       `MODEL_FINISH(${fin}): Sin contenido. Usage=${JSON.stringify(usage)}`
     );
@@ -325,15 +354,44 @@ TIEMPO: {now_iso} | {now_human} ({tz})
   const tParseStart = process.hrtime.bigint();
   let compact: Compact;
   try {
-    compact = await parser.parse(rawText);
+    compact = await parser.parse(cleanedText);
   } catch (err: any) {
-    const msg = (err?.message || String(err)).slice(0, 500);
-    throw new Error(
-      `PARSE_ERROR(decideAndAnswerLite): JSON inválido. Detalle: ${msg}. Raw="${rawText.slice(
-        0,
-        400
-      )}"`
-    );
+    const rescued = rescueJsonSlice(cleanedText);
+    if (rescued) {
+      try {
+        compact = await parser.parse(rescued);
+        console.warn("[decide][rescue] Gemini devolvió texto + JSON; se extrajo el objeto válido.");
+      } catch (rescErr: any) {
+        const msg = (rescErr?.message || String(rescErr)).slice(0, 500);
+        throw new Error(
+          `PARSE_ERROR(decideAndAnswerLite): JSON inválido tras rescue. Detalle: ${msg}. Raw="${cleanedText.slice(
+            0,
+            400
+          )}"`
+        );
+      }
+    } else {
+      const fallbackText = cleanedText.trim();
+      if (fallbackText) {
+        console.warn(
+          "[decide][fallback.trigger] Gemini no devolvió JSON puro; se pedirá aclaración al usuario."
+        );
+        compact = {
+          a: "Disculpá, no entendí bien. ¿Podés repetir o clarificar tu mensaje? 😊",
+          c: 0.5,
+          isCalendar: false,
+          ii: false,
+        };
+      } else {
+        const msg = (err?.message || String(err)).slice(0, 500);
+        throw new Error(
+          `PARSE_ERROR(decideAndAnswerLite): JSON inválido. Detalle: ${msg}. Raw="${cleanedText.slice(
+            0,
+            400
+          )}"`
+        );
+      }
+    }
   }
   const tParseEnd = process.hrtime.bigint();
 
@@ -368,7 +426,7 @@ TIEMPO: {now_iso} | {now_human} ({tz})
     final_answer: ok.data.a,
     identify_intent: ok.data.ii,
     confidence: ok.data.c,
-    isCalendar: ok.data.isCalendar
+    isCalendar: ok.data.isCalendar,
     // readyToSchedule: ok.data.readyToSchedule,
     // appt: {
     //   procedure: ok.data.appt.procedure,
