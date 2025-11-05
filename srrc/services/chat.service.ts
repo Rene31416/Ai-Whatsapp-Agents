@@ -164,9 +164,10 @@ export class ChatService {
   }
 
   private async buildWindows(job: ChatJob): Promise<Windows> {
+    const historyLimit = 20;
     const [{ memory }, history] = await Promise.all([
       this.memoryRepository.getMemory(job.tenantId, job.userId),
-      this.chatRepository.getRecentHistory(job.tenantId, job.userId, 20),
+      this.chatRepository.getRecentHistory(job.tenantId, job.userId, historyLimit),
     ]);
 
     const lastAgent = [...history].reverse().find((h) => h.role === "agent");
@@ -174,13 +175,24 @@ export class ChatService {
       ? this.chatRepository.hasEightHoursElapsed(lastAgent.timestamp ?? "")
       : true;
 
+    const agendaKeyword = /(cita|agend|doctor|radiograf|prótesis|cordal|evaluaci[oó]n|calendario)/i;
+    const agendaFollowUp =
+      agendaKeyword.test(job.combinedText) ||
+      history.some((h) => agendaKeyword.test(h.message ?? "")) ||
+      (lastAgent ? agendaKeyword.test(lastAgent.message ?? "") : false);
+
+    const turnsToUse = agendaFollowUp ? historyLimit : Math.min(8, history.length);
+    const maxChars = agendaFollowUp ? 3200 : 1200;
+
     const factsHeader = buildFactsHeader(memory, greetOk);
-    const recentWindow = buildRecentWindow(history, 20, 3200);
+    const recentWindow = buildRecentWindow(history, turnsToUse, maxChars);
 
     this.log.info("chat.windows.ready", {
       facts_len: factsHeader.length,
       recent_len: recentWindow.length,
       greetOk,
+      turnsToUse,
+      agendaFollowUp,
     });
 
     return { factsHeader, recentWindow, greetOk };
