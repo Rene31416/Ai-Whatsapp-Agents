@@ -6,7 +6,7 @@ import {
 } from "@aws-sdk/client-secrets-manager";
 
 let cachedKey: string | null = null;
-let llmInstance: ChatGoogleGenerativeAI | null = null;
+let llmInstance: any = null;
 
 /** Resolve Google API key either from ENV (GOOGLE_API_KEY) or Secrets Manager (GEMINI_SECRET_ARN). */
 async function getApiKey(): Promise<string> {
@@ -33,12 +33,38 @@ async function getApiKey(): Promise<string> {
   return cachedKey;
 }
 
-/** Get a singleton LLM instance. Hyperparams are set per-call using `.bind()` (see getTunedLLM). */
-export async function getLLM(): Promise<ChatGoogleGenerativeAI> {
+/**
+ * Get a singleton LLM instance.
+ * - Default: Gemini (MODEL = GEMINI_MODEL || gemini-2.5-flash-lite) using GOOGLE_API_KEY or GEMINI_SECRET_ARN.
+ * - If LLM_PROVIDER=openai: uses ChatOpenAI with OPENAI_API_KEY and OPENAI_MODEL (default gpt-4.1-mini).
+ */
+export async function getLLM(): Promise<any> {
   if (llmInstance) return llmInstance;
+  const provider = (process.env.LLM_PROVIDER || "gemini").toLowerCase();
+  if (provider === "openai") {
+    let ChatOpenAICtor: any;
+    try {
+      // eslint-disable-next-line @typescript-eslint/ban-ts-comment
+      // @ts-ignore -- optional dependency
+      ChatOpenAICtor = (await import("@langchain/openai")).ChatOpenAI;
+    } catch (err) {
+      throw new Error(
+        "LLM_PROVIDER=openai pero no se pudo cargar '@langchain/openai'. Añade la dependencia o ajusta la configuración."
+      );
+    }
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) throw new Error("OPENAI_API_KEY is required when LLM_PROVIDER=openai");
+    llmInstance = new ChatOpenAICtor({
+      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      apiKey,
+      temperature: 0.3,
+    }) as any;
+    (llmInstance as any).__provider = "openai";
+    return llmInstance as any;
+  }
   const apiKey = await getApiKey();
   llmInstance = new ChatGoogleGenerativeAI({
-    model: "gemini-2.5-flash",
+    model: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite",
     apiKey,
   });
   return llmInstance;
@@ -53,6 +79,15 @@ export async function getTunedLLM(opts?: {
   safetySettings?: any;
 }) {
   const base = await getLLM();
+  if ((base as any).__provider === "openai") {
+    return (base as any).bind?.(
+      {
+        ...(opts ?? {}),
+        temperature: opts?.temperature ?? 0.3,
+        response_format: { type: "json_object" },
+      }
+    ) ?? base;
+  }
   return (base as any).bind?.({
     top_p: 0.9,
     maxOutputTokens: 192,
