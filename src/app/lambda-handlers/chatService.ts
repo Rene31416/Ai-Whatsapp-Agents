@@ -1,55 +1,29 @@
 // src/lambda/handlers/chat.handler.ts
 import "reflect-metadata";
-import { SQSEvent, SQSRecord } from "aws-lambda";
+import { SQSEvent } from "aws-lambda";
 import { container } from "../container";
-import { ChatService } from "../../chat/chat.service";
+import { Logger } from "@aws-lambda-powertools/logger";
+import { ChatService } from "../../services/chat.service";
 
-// 🧩 Resolve ChatService instance from Inversify container
+// 🧩 Resolve dependencies
 const chatService = container.get(ChatService);
+const logger = container.get(Logger);
 
 // ✅ AWS Lambda entrypoint
 export const handler = async (event: SQSEvent): Promise<void> => {
-  console.log("📥 ChatService Lambda triggered:", JSON.stringify(event, null, 2));
+  logger.info("📥 ChatService Lambda triggered", { recordCount: event.Records.length });
 
   for (const [index, record] of event.Records.entries()) {
-    console.log(`💡 Processing SQS record [${index}]`);
+    logger.info("💡 Processing SQS record", { index, messageId: record.messageId });
 
     try {
-      // 🔍 Debug: log raw message body for clarity
-      console.log("📦 Raw SQS record body:", record.body);
-
-      // ✅ Parse the SQS message body
-      const parsedBody = JSON.parse(record.body);
-      const { tenantId, userId, combinedText, messageCount } = parsedBody;
-
-      if (!tenantId || !userId || typeof combinedText !== "string" || !combinedText.length) {
-        console.warn("⚠️ Missing required fields in record:", parsedBody);
-        continue;
-      }
-
-      // (Opcional) sanity log del conteo de líneas vs messageCount
-      const splitCount = combinedText.split(/\r?\n/).filter(Boolean).length;
-      if (typeof messageCount === "number" && messageCount !== splitCount) {
-        console.warn("⚠️ messageCount mismatch", { messageCount, splitCount });
-      }
-
-      // ✅ Pasar el payload **tal cual**, conservando combinedText con saltos de línea
-      const passThrough: SQSRecord = {
-        ...record,
-        body: JSON.stringify({
-          tenantId,
-          userId,
-          combinedText,      // ← mantenerlo intacto; NO enviar "messages"
-          messageCount,      // ← opcional, útil para auditoría
-        }),
-      } as SQSRecord;
-
-      await chatService.handleRecord(passThrough);
+      // ✅ Call service as before
+      await chatService.handleRecord(record);
     } catch (err) {
-      console.error("❌ Error handling SQS record:", err);
+      logger.error("❌ Error handling SQS record", { index, err });
       throw err; // Let SQS retry automatically
     }
   }
 
-  console.log("🏁 ChatService Lambda completed all records");
+  logger.info("🏁 ChatService Lambda completed all records");
 };

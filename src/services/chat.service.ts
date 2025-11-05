@@ -5,8 +5,8 @@ import { SQSRecord } from "aws-lambda";
 
 import { ChatRepository } from "../chat/chat.repository";
 import { MemoryRepository } from "../chat/memory.repository";
-import { WhatsappService } from "../services/whatsapp.service";
-import { PostOpsService } from "../services/post.ops.service";
+import { WhatsappService } from "./whatsapp.service";
+import { PostOpsService } from "./post.ops.service";
 
 import { buildFactsHeader, buildRecentWindow } from "../helper/prompts.helper";
 import { DentalWorkflow } from "../workflow/main.workflow";

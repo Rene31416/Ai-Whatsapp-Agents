@@ -39,6 +39,5 @@ export function hasEightHoursElapsed(sinceIso: string, now: Date = new Date()): 
   const since = new Date(sinceIso);
   if (Number.isNaN(since.getTime())) return false;        // invalid input → false
   const diffMs = now.getTime() - since.getTime();         // negative if since is in the future
-  return diffMs >= 8 * 60 * 60 * 1000;                    // 8 hours in ms
+  return diffMs >= 4 * 60 * 60 * 1000;                    // 4 hours in ms
 }
-

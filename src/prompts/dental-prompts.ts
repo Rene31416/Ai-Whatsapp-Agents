@@ -1,22 +1,52 @@
 import { PromptTemplate } from "@langchain/core/prompts";
 import { z } from "zod";
-import { getLLM, CLINIC_CONTEXT } from "../chat/models";
+import { getLLM, CLINIC_CONTEXT } from "../services/llm.services";
 import { JsonOutputParser } from "@langchain/core/output_parsers";
 
+// ===== 1. What we return to the rest of the system =====
+// We keep final_answer / identify_intent / confidence for backwards compat
+// AND we surface the scheduling metadata so we can branch later.
 export const DecisionLiteSchema = z.object({
-  final_answer: z
-    .string()
-    .min(1, "final_answer vacío")
-    .max(400, "final_answer excede 400 chars"),
-  identify_intent: z.boolean(),
-  confidence: z.number().min(0).max(1),
+  final_answer: z.string().max(400, "final_answer excede 400 chars"),
+
+  identify_intent: z.boolean(), // <- maps from ii (did user give contact info?)
+  confidence: z.number().min(0).max(1), // <- maps from c
+
+  isCalendar: z.boolean(),
+  // readyToSchedule: z.boolean(),
+
+  // appt: z.object({
+  //   procedure: z.string().min(1).max(100).nullable(),
+  //   needsDoctorReview: z.boolean().nullable(),
+  //   patientName: z.string().min(1).max(120).nullable(),
+  //   phone: z.string().min(1).max(40).nullable(),
+  //   apptAt: z.string().min(1).max(80).nullable(), // ISO8601 UTC like "2025-11-03T21:00:00Z" or null
+  //   notes: z.string().min(1).max(200).nullable(),
+  // }),
 });
 export type DecisionLite = z.infer<typeof DecisionLiteSchema>;
 
+// ===== 2. Raw shape we expect FROM the LLM =====
+// This is EXACTLY what the model must output each turn.
 const CompactSchema = z.object({
-  a: z.string().min(1).max(400),
-  ii: z.boolean(),
-  c: z.number().min(0).max(1),
+  a: z.string().max(400), // WhatsApp answer
+  ii: z.boolean(), // did user give/update THEIR contact info this turn?
+  c: z.number().min(0).max(1), // confidence in ii
+  isCalendar: z.boolean(),
+
+  // appt: z.object({
+  //   procedure: z.string().min(1).max(100).nullable(),
+  //   needsDoctorReview: z.boolean().nullable(),
+  //   patientName: z.string().min(1).max(120).nullable(),
+  //   phone: z.string().min(1).max(40).nullable(),
+  //   apptAt: z.string().min(1).max(80).nullable(), // UTC timestamp string if user gave a clear date+hora
+  //   notes: z.string().min(1).max(200).nullable(),
+  // }),
+
+  // readyToSchedule: z.boolean(), // true ONLY if:
+  // intent === "schedule",
+  // appt.needsDoctorReview === false,
+  // appt.patientName, appt.phone, appt.apptAt are all non-null
 });
 type Compact = z.infer<typeof CompactSchema>;
 
@@ -50,21 +80,25 @@ function extractAnyText(msg: any): string {
   }
 }
 
-function startTimer(label: string) {
-  const t0 = process.hrtime.bigint();
-  return () => {
-    const ms = Number(process.hrtime.bigint() - t0) / 1e6;
-    console.info(`⏱ ${label}: ${ms.toFixed(1)} ms`);
-    return ms;
-  };
-}
-
 function getFinishReason(msg: any): string | undefined {
   return (
     msg?.additional_kwargs?.finishReason ??
     msg?.response_metadata?.finishReason ??
     msg?.kwargs?.additional_kwargs?.finishReason
   );
+}
+
+function stripJsonFences(s: string): string {
+  const fenced = s.trim().match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  if (fenced) return fenced[1].trim();
+  return s.trim();
+}
+
+function rescueJsonSlice(s: string): string | null {
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first >= 0 && last > first) return s.slice(first, last + 1);
+  return null;
 }
 
 function ms(from: bigint, to: bigint) {
@@ -93,6 +127,8 @@ export async function decideAndAnswerLite(input: {
     .join(" | ");
 
   const parser = new JsonOutputParser<Compact>();
+
+  // model tuning
   const tuned =
     (base as any).bind?.({
       temperature: 0.25,
@@ -113,6 +149,11 @@ export async function decideAndAnswerLite(input: {
       ],
     }) ?? base;
 
+  // =========================================
+  // PROMPT TEMPLATE (SYSTEM INSTRUCTIONS)
+  // =========================================
+
+  // ---------- MAIN (ROUTER) PROMPT ----------
 const prompt = new PromptTemplate({
   inputVariables: [
     "message",
@@ -124,36 +165,63 @@ const prompt = new PromptTemplate({
     "tz",
   ],
   template: `
-Actúa como asistente de una clínica dental. Responde SIEMPRE en español, tono WhatsApp, 1–2 emojis.
+Responde SIEMPRE en español, estilo WhatsApp, con máximo 1–2 emojis. Soná natural, cero callcenter.
 
-REGLAS DE ESTILO (OBLIGATORIAS):
-- Saluda de vuelta SOLO si el MSG es un saludo simple.
-- Asume que si VENTANA viene vacio debes saludar porque es la primera vez que interactuas con el cliente y debes presentarte
-- Si el MSG NO es saludo simple: NO empieces con “hola”, “buenos días/tardes/noches”, “qué tal”, “hey” (ni variantes) y NO te autopresentes; ve directo a responder.
-- Mantén 2–3 frases, cálidas y concretas.
+SALUDO / PRESENTACIÓN (controlado por FACTS):
+- FACTS puede traer [GREET_OK=true|false].
+- Si GREET_OK=true: podés saludar brevemente y presentarte UNA sola vez como asistente de la CLÍNICA.
+- Si GREET_OK=true y el MSG es un saludo simple, presentate como el asistente virtual de Opal Dental Clinic y contá en 2–3 frases amigables (con 1–2 emojis) cómo podés ayudar: info de la clínica, dudas de tratamientos, agendar o ajustar citas. Cerrá con una pregunta suave ligada al contexto reciente (“¿Querés agendar otra cita?”, “¿Necesitás algo más de la clínica?”), variando el wording.
+- Si GREET_OK=false: no saludes ni te presentes otra vez; andá directo al punto.
+- Si GREET_OK=false pero el MSG es un saludo simple y VENTANA no muestra preguntas tuyas pendientes ni mensajes recientes del usuario sobre citas, devolvé un saludo breve que mencione la clínica (“¡Hola de nuevo desde Opal Dental! ¿Cómo te acompaño hoy?”) sin repetir toda la presentación y usando variaciones cálidas.
+- Si saludás, variá saludos breves (ej.: “¡Hola!”, “¡Buenas!”, “¡Qué gusto leerte!”) y evitá repetir literalmente el último saludo ya usado por el agente en VENTANA.
 
-COMPORTAMIENTO COMO ASISTENTE:
-- Usa solo CLINICA, TIEMPO y FACTS (sin hardcode). Si falta un dato clave, pide la mínima precisión.
-- Si el usuario comparte o pide actualizar nombre/email/teléfono, marca ii=true y confirma con cautela.
-- Fallback breve si la intención no es clara (pide una aclaración mínima para avanzar).
+ROL DE ESTE NODO (Customer Service – información general):
+- Aclarar/resumir lo que el usuario pide en MSG.
+- Responder SOLO información general de la CLÍNICA si el MSG lo pide explícitamente (dirección, horarios, teléfono).
+- Detectar si el MENSAJE ACTUAL trae/actualiza datos personales del usuario (ii).
+- Este nodo NO maneja reglas de agenda ni recolecta datos para citas.
+- Aun así, hablá en primera persona (“puedo ayudarte a agendar”) cuando corresponda; si detectás intención de cita, marcá "isCalendar=true" y deja que el flujo de citas continúe en silencio.
 
-NOTA SOBRE VENTANA:
-- VENTANA contiene hasta N turnos recientes en orden cronológico, con líneas tipo "U:" (usuario) y "A:" (agente).
-- Úsala solo para mantener continuidad (nombres, datos ya dados, evitar repetir preguntas).
-- No cites toda la VENTANA ni repitas saludos previos; responde al MSG actual.
+RUTEO A AGENDA (único requisito):
+- Si el MSG sugiere o insinúa cualquier acción relacionada con una cita (agendar, reagendar, cancelar, confirmar, consultar disponibilidad), aunque sea ambiguo:
+  - setea "isCalendar": true
+  - y dejá "a": "" (cadena vacía). La respuesta al usuario la dará el agente de calendario.
+- Si VENTANA muestra que el agente ya pidió datos de agenda (nombre/teléfono/correo/doctor) y el usuario responde con esos datos, mantené isCalendar=true y a="" para seguir con el flujo.
+- Usá el MSG como señal principal: marcá "isCalendar"=true solo si el mensaje actual aporta o responde algo pendiente del flujo de agenda que ves en VENTANA (ej.: dar/ajustar fecha, hora, doctor, confirmar la cita o contestar una pregunta del calendario). Si el MSG es solo saludo, agradecimiento o no trae info nueva de la cita, mantené isCalendar=false.
 
-SALIDA ESTRICTA:
-Devuelve SOLO un objeto JSON con estas claves cortas:
-- a: string (1..400 chars, 2–3 frases, cálido)
-- ii: boolean (¿intenta identificar/actualizar nombre/email/teléfono?)
-- c: number (0..1, confianza sobre ii)
+LÍMITES (generales, sin lógica de agenda):
+- No inventes procesos internos ni acceso a sistemas.
+- No des información que no figure en CLÍNICA.
+- No pidas datos personales salvo que el usuario los ofrezca espontáneamente (si los da, marcá ii=true).
 
-CLINICA: {clinic_compact}
-TIEMPO: {now_iso} | {now_human} ({tz})
+MICROCOPY (tono breve y útil):
+- Agradecimientos del usuario: respuesta corta + oferta suave (“¡Con gusto! 😊 ¿Algo más en que te ayudo?”).
+- Si el usuario comparte identidad/datos aislados y no hay flujo abierto: agradecé y preguntá qué necesita (“¡Gracias! Lo tengo anotado 😊 ¿En qué te ayudo?”).
+- Si esos datos completan un pedido anterior (p. ej. agenda), agradecé y pedí el dato faltante o confirmá lo recibido; no reinicies con “¿En qué te ayudo?”.
+- Evitá monosílabos secos (“ok”, “listo”) salvo cierre explícito.
+
+VENTANA (orden y alcance):
+- VENTANA contiene los últimos 10 mensajes ANTERIORES al MSG, del más viejo al más reciente (oldest → newest).
+- VENTANA NO incluye MSG. Usá principalmente MSG, y VENTANA solo como apoyo.
+
+MENSAJE "a" (política de salida):
+- Si "isCalendar" = true → "a" debe ser "" (vacío), porque la respuesta la dará el agente de calendario.
+- Si "isCalendar" = false → "a" debe ser una respuesta breve (máx 2 frases / 400 caracteres), respetando GREET_OK y usando CLÍNICA solo si el MSG lo pidió.
+
+SALIDA ESTRICTA (solo UN objeto JSON válido, sin texto extra ni backticks):
+{{ 
+  "a": string,                 // si isCalendar=true, usar ""
+  "c": number,                 // confianza 0..1
+  "isCalendar": boolean,       // ¿este turno requiere flujo de calendario?
+  "ii": boolean                // ¿este turno trae/actualiza datos personales?
+}}
+
+CONTEXTO DISPONIBLE:
+CLÍNICA: {clinic_compact}
 FACTS: {facts_header}
 VENTANA: {recent_window}
 MSG: {message}
-
+TIEMPO: {now_iso} | {now_human} ({tz})
 `.trim(),
 });
 
@@ -164,19 +232,20 @@ MSG: {message}
     } recent_len=${(input.recent_window || "").length}`
   );
 
-  // ========= Render prompt (input al LLM) =========
+  // Expandimos la "ventana" para que el modelo recuerde la cita en curso.
+  // (antes ~600 chars, ahora ~1200 aprox, p/ ~15 msgs recientes)
   const t0 = process.hrtime.bigint();
   const rendered = await prompt.format({
     message: (input.message ?? "").slice(0, 400),
-    facts_header: (input.facts_header ?? "").slice(0, 140),
-    recent_window: (input.recent_window ?? "").slice(0, 600),
+    facts_header: (input.facts_header ?? "").slice(0, 200),
+    recent_window: (input.recent_window ?? "").slice(0, 1200),
     clinic_compact: clinic_compact.slice(0, 240),
     now_iso: input.now_iso,
     now_human: input.now_human,
     tz: input.tz,
   });
 
-  // después de `const rendered = await prompt.format(...)`:
+  // debug: FACTS line
   const factsLineMatch = rendered.match(/FACTS:\s*([\s\S]*?)\nVENTANA:/);
   const factsRendered = factsLineMatch?.[1] ?? "(facts not found)";
   console.info(
@@ -184,27 +253,20 @@ MSG: {message}
       .slice(0, 160)
       .replace(/\n/g, "\\n")}"`
   );
-
   const flagMatch = factsRendered.match(/\[GREET_OK=(true|false)\]/i);
   console.info("[llm.input/GREET_OK.detected]:", flagMatch?.[1] ?? "(missing)");
 
   const tRender = process.hrtime.bigint();
 
-  // Log de entrada al LLM (snippet y longitudes)
+  // Logs de entrada
+  const vis = (s: string, n = 240) => s.replace(/\s+/g, " ").trim().slice(0, n);
+  const countLines = (s: string) => (s ? s.split(/\r?\n/).length : 0);
+
   console.info(
     `[llm.input] chars=${rendered.length} preview="${rendered
       .slice(0, 300)
       .replace(/\n/g, "\\n")}${rendered.length > 300 ? "…" : ""}"`
   );
-
-  // ========= Invoke LLM =========
-  const tInvokeStart = process.hrtime.bigint();
-
-  // ===== métricas rápidas del input =====
-  const vis = (s: string, n = 240) => s.replace(/\s+/g, " ").trim().slice(0, n);
-  const countLines = (s: string) => (s ? s.split(/\r?\n/).length : 0);
-
-  // LOGS de cada bloque
   console.info(
     `[llm.input/MSG] len=${(input.message ?? "").length} lines=${countLines(
       input.message
@@ -223,26 +285,21 @@ MSG: {message}
       320
     )}"`
   );
+  console.log("//////////////////////// VENATABA ////////////////");
+  console.info(`[llm.input/VENTANA] ${input.recent_window}`);
 
-  // el render ya lo estás logueando con chars y preview
-  console.info(
-    `[llm.input] chars=${rendered.length} preview="${rendered
-      .slice(0, 300)
-      .replace(/\n/g, "\\n")}${rendered.length > 300 ? "…" : ""}"`
-  );
-
+  // Invoke LLM
+  const tInvokeStart = process.hrtime.bigint();
   const llmOut: any = await tuned.invoke(rendered);
   const tInvokeEnd = process.hrtime.bigint();
 
-  // Timings
+  // Timings / usage
   console.info(
     `[llm.timing] render_ms=${ms(t0, tRender).toFixed(1)} invoke_ms=${ms(
       tInvokeStart,
       tInvokeEnd
     ).toFixed(1)} total_ms=${ms(t0, tInvokeEnd).toFixed(1)}`
   );
-
-  // Uso de tokens si está disponible
   const usage =
     llmOut?.usage_metadata ?? llmOut?.response_metadata?.tokenUsage ?? {};
   const promptTok =
@@ -261,36 +318,66 @@ MSG: {message}
     );
   }
 
-  // ========= Output bruto del LLM =========
+  // Raw output
   const fin = getFinishReason(llmOut);
   const rawText = extractAnyText(llmOut) ?? "";
+  const cleanedText = stripJsonFences(rawText);
   console.info(
     `[llm.output] finish=${fin ?? "?"} chars=${
-      rawText.length
-    } preview="${rawText.slice(0, 300).replace(/\n/g, "\\n")}${
-      rawText.length > 300 ? "…" : ""
+      cleanedText.length
+    } preview="${cleanedText.slice(0, 300).replace(/\n/g, "\\n")}${
+      cleanedText.length > 300 ? "…" : ""
     }"`
   );
 
-  if ((!rawText || !rawText.trim()) && fin && fin !== "STOP") {
+  if ((!cleanedText || !cleanedText.trim()) && fin && fin !== "STOP") {
     throw new Error(
       `MODEL_FINISH(${fin}): Sin contenido. Usage=${JSON.stringify(usage)}`
     );
   }
 
-  // ========= Parseo y validación =========
+  // Parse + validate
   const tParseStart = process.hrtime.bigint();
   let compact: Compact;
   try {
-    compact = await parser.parse(rawText);
+    compact = await parser.parse(cleanedText);
   } catch (err: any) {
-    const msg = (err?.message || String(err)).slice(0, 500);
-    throw new Error(
-      `PARSE_ERROR(decideAndAnswerLite): JSON inválido. Detalle: ${msg}. Raw="${rawText.slice(
-        0,
-        400
-      )}"`
-    );
+    const rescued = rescueJsonSlice(cleanedText);
+    if (rescued) {
+      try {
+        compact = await parser.parse(rescued);
+        console.warn("[decide][rescue] Gemini devolvió texto + JSON; se extrajo el objeto válido.");
+      } catch (rescErr: any) {
+        const msg = (rescErr?.message || String(rescErr)).slice(0, 500);
+        throw new Error(
+          `PARSE_ERROR(decideAndAnswerLite): JSON inválido tras rescue. Detalle: ${msg}. Raw="${cleanedText.slice(
+            0,
+            400
+          )}"`
+        );
+      }
+    } else {
+      const fallbackText = cleanedText.trim();
+      if (fallbackText) {
+        console.warn(
+          "[decide][fallback.trigger] Gemini no devolvió JSON puro; se pedirá aclaración al usuario."
+        );
+        compact = {
+          a: "Disculpá, no entendí bien. ¿Podés repetir o clarificar tu mensaje? 😊",
+          c: 0.5,
+          isCalendar: false,
+          ii: false,
+        };
+      } else {
+        const msg = (err?.message || String(err)).slice(0, 500);
+        throw new Error(
+          `PARSE_ERROR(decideAndAnswerLite): JSON inválido. Detalle: ${msg}. Raw="${cleanedText.slice(
+            0,
+            400
+          )}"`
+        );
+      }
+    }
   }
   const tParseEnd = process.hrtime.bigint();
 
@@ -320,11 +407,21 @@ MSG: {message}
     ).toFixed(1)}ms`
   );
 
-  // ========= Mapeo y validación final =========
+  // Map to DecisionLite
   const mapped: DecisionLite = {
     final_answer: ok.data.a,
     identify_intent: ok.data.ii,
     confidence: ok.data.c,
+    isCalendar: ok.data.isCalendar,
+    // readyToSchedule: ok.data.readyToSchedule,
+    // appt: {
+    //   procedure: ok.data.appt.procedure,
+    //   needsDoctorReview: ok.data.appt.needsDoctorReview,
+    //   patientName: ok.data.appt.patientName,
+    //   phone: ok.data.appt.phone,
+    //   apptAt: ok.data.appt.apptAt,
+    //   notes: ok.data.appt.notes,
+    // },
   };
 
   const finOk = DecisionLiteSchema.safeParse(mapped);
@@ -339,7 +436,8 @@ MSG: {message}
   console.info(
     `[decide][out] a_len=${out.final_answer.length} ii=${
       out.identify_intent
-    } c=${out.confidence.toFixed(2)}`
+    } c=${out.confidence.toFixed(2)} isCalendar=${out.isCalendar}`
   );
+
   return out;
 }

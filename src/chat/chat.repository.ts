@@ -1,48 +1,65 @@
+// src/chat/chat.repository.ts
 import {
   DynamoDBClient,
   PutItemCommand,
   QueryCommand,
 } from "@aws-sdk/client-dynamodb";
-import { injectable } from "inversify";
+import { injectable, inject } from "inversify";
+import { Logger } from "@aws-lambda-powertools/logger";
+
+export type HistoryItem = {
+  role: "user" | "agent";
+  message: string;
+  timestamp?: string;
+};
 
 @injectable()
 export class ChatRepository {
   private client = new DynamoDBClient({});
-  private tableName = process.env.CHAT_SESSIONS_TABLE_NAME!; // ✅ use env var injected by CDK
+  private tableName = process.env.CHAT_SESSIONS_TABLE_NAME!; // ✅ env by CDK
 
+  constructor(@inject(Logger) private readonly log: Logger) {}
+
+  /**
+   * Insert a single chat turn (user/agent).
+   * Logs PK/SK and message length; avoids body/PII.
+   */
   async saveMessage(
     tenantId: string,
     userId: string,
     role: "user" | "agent",
     message: string
-  ) {
+  ): Promise<void> {
     const timestamp = new Date().toISOString();
     const PK = `TENANT#${tenantId}#USER#${userId}`;
     const SK = `TS#${timestamp}`;
 
-    const item = {
-      PK: { S: PK },
-      SK: { S: SK },
-      role: { S: role },
-      message: { S: message },
-      timestamp: { S: timestamp },
-    };
-    console.log("💬 Saving", { role, PK, SK });
-
     await this.client.send(
       new PutItemCommand({
         TableName: this.tableName,
-        Item: item,
+        Item: {
+          PK: { S: PK },
+          SK: { S: SK },
+          role: { S: role },
+          message: { S: message },
+          timestamp: { S: timestamp },
+        },
       })
     );
+
+    this.log.info("repo.chat.save.ok", { role, PK, SK, len: message.length });
   }
 
+  /**
+   * Read recent history, oldest → newest, with a limit.
+   */
   async getRecentHistory(
     tenantId: string,
     userId: string,
     limit = 10
-  ): Promise<any[]> {
+  ): Promise<HistoryItem[]> {
     const PK = `TENANT#${tenantId}#USER#${userId}`;
+
     const res = await this.client.send(
       new QueryCommand({
         TableName: this.tableName,
@@ -53,27 +70,23 @@ export class ChatRepository {
       })
     );
 
-    return (
+    const out =
       res.Items?.map((item) => ({
-        role: item.role.S,
-        message: item.message.S,
+        role: (item.role?.S as "user" | "agent") ?? "user",
+        message: item.message?.S ?? "",
         timestamp: item.timestamp?.S,
-      })).reverse() ?? []
-    );
+      })).reverse() ?? [];
+
+    this.log.info("repo.chat.history.ok", { PK, count: out.length });
+    return out;
   }
 
   /**
-   * Returns true if 8 hours have passed from `sinceIso` to now.
-   * @param sinceIso ISO-8601 timestamp (e.g. "2025-10-23T08:15:00.000Z")
-   * @param now Optional override for "current" time (useful in tests)
+   * True if 4 hours elapsed since `sinceIso` (invalid → false).
    */
-  public hasEightHoursElapsed(
-    sinceIso: string,
-    now: Date = new Date()
-  ): boolean {
+  public hasEightHoursElapsed(sinceIso: string, now: Date = new Date()): boolean {
     const since = new Date(sinceIso);
-    if (Number.isNaN(since.getTime())) return false; // invalid input → false
-    const diffMs = now.getTime() - since.getTime(); // negative if since is in the future
-    return diffMs >= 8 * 60 * 60 * 1000; // 8 hours in ms
+    if (Number.isNaN(since.getTime())) return false;
+    return now.getTime() - since.getTime() >= 4 * 60 * 60 * 1000;
   }
 }

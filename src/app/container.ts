@@ -1,20 +1,45 @@
-import "reflect-metadata";
+// src/lambda/container.ts (or wherever this lives)
+
+// import "reflect-metadata";
 import { Container } from "inversify";
-import { ChatService } from "../chat/chat.service";
-import { DentalWorkflow } from "../chat/dental.workflow";
+import { Logger } from "@aws-lambda-powertools/logger";
+
+import { ChatService } from "../services/chat.service";
 import { WhatsappController } from "../controller/chat.controller";
+import { ConsoleLogger } from "../observability/logger";
 import { ChatRepository } from "../chat/chat.repository";
 import { MemoryRepository } from "../chat/memory.repository";
+import { WhatsappService } from "../services/whatsapp.service";
+import { PostOpsService } from "../services/post.ops.service";
+import { ContactFactsExtractorService } from "../prompts/facts.prompt";
+import { CalendarPromptService } from "../prompts/calendar.prompt";
+import { DentalWorkflow } from "../workflow/main.workflow";
+// import { DentalWorkflow } from "../chat/dental.workflow";
 
+const container = new Container({ defaultScope: "Singleton" });
 
-const container:Container = new Container();
-
+// Core services / repos
+container.bind(ChatRepository).toSelf();
+container.bind(MemoryRepository).toSelf();
+container.bind(WhatsappService).toSelf();
+container.bind(PostOpsService).toSelf();
 container.bind(ChatService).toSelf();
-container.bind(DentalWorkflow).toSelf();
+
+// Controllers / misc
 container.bind(WhatsappController).toSelf();
-container.bind(ChatRepository).toSelf()
-container.bind(MemoryRepository).toSelf()
+container.bind(ConsoleLogger).toSelf();
+container.bind(ContactFactsExtractorService).toSelf();
+container.bind(CalendarPromptService).toSelf();
+container.bind(DentalWorkflow).toSelf()
 
+// container.bind(DentalWorkflow).toSelf(); // still constructed manually in ChatService
 
+// Shared Logger instance
+const logger = new Logger({
+  serviceName: process.env.SERVICE_NAME ?? "chat-lambda",
+  logLevel: "INFO",
+});
+
+container.bind(Logger).toConstantValue(logger);
 
 export { container };
