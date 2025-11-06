@@ -424,8 +424,10 @@ a {
 
 .dashboard__header {
   display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.6rem 1.2rem;
 }
 
 .dashboard__header h1 {
@@ -437,6 +439,11 @@ a {
   margin: 0;
   color: #cbd5f5;
   max-width: 540px;
+}
+
+.dashboard__header-actions {
+  display: flex;
+  gap: 0.75rem;
 }
 
 .status-alert {
@@ -546,6 +553,36 @@ a {
   line-height: 1.55;
 }
 
+.integration-alert {
+  margin-top: 1rem;
+  padding: 0.9rem 1rem;
+  border-radius: 16px;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.integration-alert h4 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+}
+
+.integration-alert p {
+  margin: 0;
+  color: #cbd5f5;
+}
+
+.integration-alert--success {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.12);
+  color: #bbf7d0;
+}
+
+.integration-alert--error {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.12);
+  color: #fecdd3;
+}
+
 .integration-panel__meta h3 {
   margin: 0 0 0.8rem;
   font-size: 1.1rem;
@@ -558,6 +595,31 @@ a {
   color: #94a3b8;
   display: grid;
   gap: 0.5rem;
+}
+
+.integration-summary {
+  background: rgba(11, 16, 23, 0.72);
+  border-radius: 18px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  padding: 1.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  color: #cbd5f5;
+}
+
+.integration-summary h2 {
+  margin: 0;
+  font-size: 1.25rem;
+  color: #f8fafc;
+}
+
+.integration-summary code {
+  background: rgba(63, 78, 139, 0.28);
+  padding: 0.2rem 0.5rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: #bfdbfe;
 }
 
 @media (max-width: 900px) {

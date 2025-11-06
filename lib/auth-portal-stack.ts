@@ -1,9 +1,13 @@
 import * as cdk from "aws-cdk-lib";
 import { Construct } from "constructs";
 import * as cognito from "aws-cdk-lib/aws-cognito";
-import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as nodeLambda from "aws-cdk-lib/aws-lambda-nodejs";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as iam from "aws-cdk-lib/aws-iam";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 
 export interface AuthPortalStackProps extends cdk.StackProps {
   /**
@@ -18,6 +22,14 @@ export interface AuthPortalStackProps extends cdk.StackProps {
    * OAuth logout URLs for the user pool client.
    */
   readonly logoutUrls?: string[];
+  /**
+   * Optional DynamoDB table for tenant metadata.
+   */
+  readonly tenantTableName?: string;
+  /**
+   * Optional ARN or name of the base secret where calendar credentials will be stored.
+   */
+  readonly calendarSecretBaseArn?: string;
 }
 
 export class AuthPortalStack extends cdk.Stack {
@@ -76,24 +88,85 @@ export class AuthPortalStack extends cdk.Stack {
       },
     });
 
-    const calendarAuthHandler = new lambda.Function(
+    const oauthConfigSecret = new secretsmanager.Secret(this, "GoogleOAuthConfigSecret", {
+      secretName: `${cdk.Stack.of(this).stackName}-google-oauth-config`,
+      secretObjectValue: {
+        clientId: cdk.SecretValue.unsafePlainText("SET_GOOGLE_CLIENT_ID"),
+        clientSecret: cdk.SecretValue.unsafePlainText("SET_GOOGLE_CLIENT_SECRET"),
+        redirectUri: cdk.SecretValue.unsafePlainText("SET_REDIRECT_URI"),
+      },
+    });
+
+    const tokenSecretPrefix =
+      props?.calendarSecretBaseArn ??
+      (this.node.tryGetContext("calendarTokenSecretPrefix") as string | undefined) ??
+      `${this.stackName}/calendar/token/tenant-`;
+
+    const calendarAuthHandler = new nodeLambda.NodejsFunction(
       this,
       "CalendarAuthHandler",
       {
         runtime: lambda.Runtime.NODEJS_20_X,
-        handler: "index.handler",
-        code: lambda.Code.fromInline(`
-          exports.handler = async (event) => {
-            console.log("Received event:", JSON.stringify(event));
-            return {
-              statusCode: 200,
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ ok: true }),
-            };
-          };
-        `),
+        entry: "src/app/lambda-handlers/calendar-auth-handler.ts",
+        handler: "handler",
+        bundling: {
+          externalModules: [],
+          target: "es2020",
+        },
+        environment: {
+          GOOGLE_OAUTH_SECRET_ARN: oauthConfigSecret.secretArn,
+          CALENDAR_TOKEN_SECRET_PREFIX: tokenSecretPrefix,
+        },
       }
     );
+
+    oauthConfigSecret.grantRead(calendarAuthHandler);
+
+    calendarAuthHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          "secretsmanager:CreateSecret",
+          "secretsmanager:PutSecretValue",
+          "secretsmanager:UpdateSecret",
+          "secretsmanager:DescribeSecret",
+        ],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${tokenSecretPrefix}*`,
+        ],
+      })
+    );
+
+    const tenantTableName =
+      props?.tenantTableName ??
+      (this.node.tryGetContext("tenantTableName") as string | undefined) ??
+      "AiAgentsStack-TenantClinicMetadataE1836452-7A05UY6RC43G";
+
+    const tenantMetadataHandler = new nodeLambda.NodejsFunction(
+      this,
+      "TenantMetadataHandler",
+      {
+        runtime: lambda.Runtime.NODEJS_20_X,
+        entry: "src/app/lambda-handlers/tenant-metadata-handler.ts",
+        handler: "handler",
+        bundling: {
+          externalModules: [],
+          target: "es2020",
+        },
+        environment: {
+          TENANT_TABLE_NAME: tenantTableName,
+          CALENDAR_TOKEN_SECRET_PREFIX: tokenSecretPrefix,
+        },
+      }
+    );
+
+    if (tenantTableName) {
+      const tenantTable = dynamodb.Table.fromTableName(
+        this,
+        "TenantMetadataTable",
+        tenantTableName
+      );
+      tenantTable.grantReadData(tenantMetadataHandler);
+    }
 
     const httpApi = new apigwv2.HttpApi(this, "AuthPortalHttpApi", {
       corsPreflight: {
@@ -112,6 +185,15 @@ export class AuthPortalStack extends cdk.Stack {
       ),
     });
 
+    httpApi.addRoutes({
+      path: "/tenants/me",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: new integrations.HttpLambdaIntegration(
+        "TenantMetadataIntegration",
+        tenantMetadataHandler
+      ),
+    });
+
     new cdk.CfnOutput(this, "AuthPortalApiUrl", {
       value: httpApi.apiEndpoint,
     });
@@ -126,6 +208,13 @@ export class AuthPortalStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, "AuthPortalCognitoDomain", {
       value: `https://${userPoolDomain.domainName}.auth.${this.region}.amazoncognito.com`,
+    });
+
+    new cdk.CfnOutput(this, "GoogleOAuthConfigSecretArn", {
+      value: oauthConfigSecret.secretArn,
+    });
+    new cdk.CfnOutput(this, "CalendarTokenSecretPrefix", {
+      value: tokenSecretPrefix,
     });
   }
 }
