@@ -2,12 +2,6 @@
 
 import { useMemo } from "react";
 
-const requiredEnv = [
-  "NEXT_PUBLIC_COGNITO_DOMAIN",
-  "NEXT_PUBLIC_COGNITO_CLIENT_ID",
-  "NEXT_PUBLIC_COGNITO_REDIRECT_URI",
-];
-
 function buildCognitoLoginUrl() {
   const domain = process.env.NEXT_PUBLIC_COGNITO_DOMAIN!;
   const clientId = process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID!;
@@ -23,10 +17,21 @@ function buildCognitoLoginUrl() {
 }
 
 export default function Home() {
-  const missingEnv = useMemo(
-    () => requiredEnv.filter((key) => !process.env[key]),
+  const config = useMemo(
+    () => ({
+      domain: process.env.NEXT_PUBLIC_COGNITO_DOMAIN,
+      clientId: process.env.NEXT_PUBLIC_COGNITO_CLIENT_ID,
+      redirectUri: process.env.NEXT_PUBLIC_COGNITO_REDIRECT_URI,
+    }),
     []
   );
+  const missingEnv = useMemo(() => {
+    const missing: string[] = [];
+    if (!config.domain) missing.push("NEXT_PUBLIC_COGNITO_DOMAIN");
+    if (!config.clientId) missing.push("NEXT_PUBLIC_COGNITO_CLIENT_ID");
+    if (!config.redirectUri) missing.push("NEXT_PUBLIC_COGNITO_REDIRECT_URI");
+    return missing;
+  }, [config]);
   const loginUrl = missingEnv.length === 0 ? buildCognitoLoginUrl() : undefined;
 
   return (
