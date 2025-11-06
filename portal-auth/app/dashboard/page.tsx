@@ -57,6 +57,7 @@ export default function Dashboard() {
     </Suspense>
   );
 }
+function DashboardContent() {
   const searchParams = useSearchParams();
   const authStatus = searchParams.get("authStatus");
   const error = searchParams.get("error");
