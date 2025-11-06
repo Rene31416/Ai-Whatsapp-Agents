@@ -42,151 +42,176 @@ export default function Home() {
       <div className="glow glow-top" />
       <div className="glow glow-bottom" />
 
+      <header className="portal__nav">
+        <div className="portal__brand">
+          <span className="portal__brand-pill">nileDevs</span>
+          <span className="portal__brand-name">AI Agents</span>
+        </div>
+        <div className="portal__nav-actions">
+          <a className="button button--ghost" href="mailto:contacto@niledevs.com">
+            Contactar soporte
+          </a>
+          <button
+            className="button button--primary"
+            disabled={!loginUrl}
+            onClick={() => loginUrl && window.location.assign(loginUrl)}
+          >
+            Ingresar
+          </button>
+        </div>
+      </header>
+
       <section className="hero">
-        <div className="hero__content">
-          <span className="hero__eyebrow">nileDevs · AI Agents</span>
-          <h1>Automatizá tus flujos con asistentes listos para producción</h1>
+        <div className="hero__body">
+          <h1 className="hero__headline">
+            Gestioná integraciones y asistentes para tus tenants sin fricción
+          </h1>
           <p>
-            Gestioná tus bots de WhatsApp, integra calendarios y monitoreá
-            métricas clave desde un portal seguro diseñado para tus tenants.
+            Centralizá autenticación, configuraciones y métricas de tus clientes desde un
+            único panel. nileDevs AI Agents te guía paso a paso para activar integraciones
+            clave como Google Calendar en minutos.
           </p>
-          <div className="hero__actions">
+          {missingEnv.length > 0 ? (
+            <div className="integration-alert integration-alert--error">
+              Configurá las variables{" "}
+              <code>NEXT_PUBLIC_COGNITO_DOMAIN</code>,{" "}
+              <code>NEXT_PUBLIC_COGNITO_CLIENT_ID</code> y{" "}
+              <code>NEXT_PUBLIC_COGNITO_REDIRECT_URI</code> para habilitar el login.
+            </div>
+          ) : null}
+          <div className="hero__cta">
             <button
-              className="btn btn-primary"
+              className="button button--primary"
               disabled={!loginUrl}
               onClick={() => loginUrl && window.location.assign(loginUrl)}
             >
               Ingresar con Cognito
             </button>
-            <a className="btn btn-ghost" href="mailto:contacto@niledevs.com">
-              Contactar soporte
+            <a className="button button--secondary" href="mailto:contacto@niledevs.com">
+              Agenda una demo
             </a>
           </div>
-          {missingEnv.length > 0 && (
-            <p className="hero__hint">
-              Ajustá las variables:{" "}
-              <code>NEXT_PUBLIC_COGNITO_DOMAIN</code>,{" "}
-              <code>NEXT_PUBLIC_COGNITO_CLIENT_ID</code>,{" "}
-              <code>NEXT_PUBLIC_COGNITO_REDIRECT_URI</code>.
-            </p>
-          )}
+          <div className="hero__stats">
+            <div className="hero__stat">
+              <strong>12</strong>
+              <span>Tenants activos</span>
+            </div>
+            <div className="hero__stat">
+              <strong>31</strong>
+              <span>Asistentes configurados</span>
+            </div>
+            <div className="hero__stat">
+              <strong>98%</strong>
+              <span>SLA promedio</span>
+            </div>
+          </div>
         </div>
 
         <aside className="hero__panel">
-          <h2>Panel de acceso</h2>
+          <h2>¿Por qué nileDevs?</h2>
           <p>
-            Luego del login verás el dashboard de tu tenant y el botón para
-            conectar Google Calendar.
+            Diseñamos este portal para que tus equipos técnicos y operativos conecten sus
+            flujos en minutos, con visibilidad total sobre cada tenant.
           </p>
-          <dl>
-            <div>
-              <dt>Tenants activos</dt>
-              <dd>12</dd>
-            </div>
-            <div>
-              <dt>Asistentes configurados</dt>
-              <dd>31</dd>
-            </div>
-            <div>
-              <dt>SLA promedio</dt>
-              <dd>98%</dd>
-            </div>
-          </dl>
+          <ul>
+            <li>Autenticación segura con Cognito y control por tenant.</li>
+            <li>Integración guiada de Google Calendar con refresh tokens seguros.</li>
+            <li>Panel listo para métricas operativas de tus asistentes.</li>
+          </ul>
         </aside>
       </section>
 
-      <section className="feature-grid">
-        <article className="feature-card">
-          <header>
-            <span className="badge badge-ready">Prod ready</span>
-            <h3>Autenticación multi-tenant</h3>
-          </header>
-          <p>
-            Administrá el acceso a tu portal con Cognito Hosted UI, login
-            federado y políticas flexibles de seguridad.
-          </p>
-        </article>
-
-        <article className="feature-card">
-          <header>
-            <span className="badge badge-soon">Próximo</span>
-            <h3>Sincronización con Google Calendar</h3>
-          </header>
-          <p>
-            Guardá el refresh token en Secrets Manager y confirmá
-            disponibilidad real antes de reservar turnos.
-          </p>
-        </article>
-
-        <article className="feature-card">
-          <header>
-            <span className="badge badge-soon">Próximo</span>
-            <h3>Métricas del asistente</h3>
-          </header>
-          <p>
-            Reportes de engagement, tiempos de respuesta y salud del bot para
-            cada tenant.
-          </p>
-        </article>
+      <section className="section">
+        <span className="section__title">Lo que incluye</span>
+        <div className="feature-list">
+          <article className="feature-card">
+            <header>
+              <span className="badge badge-ready">Prod ready</span>
+              <h3>Autenticación multi-tenant</h3>
+            </header>
+            <p>
+              Centralizá el acceso con Cognito Hosted UI y políticas por tenant. Tus clientes
+              ingresan con seguridad gestionada por AWS.
+            </p>
+          </article>
+          <article className="feature-card">
+            <header>
+              <span className="badge badge-ready">Integraciones</span>
+              <h3>Google Calendar en un clic</h3>
+            </header>
+            <p>
+              Ejecutá OAuth 2.0 y almacená refresh tokens en Secrets Manager sin exponer
+              credenciales ni procesos manuales.
+            </p>
+          </article>
+          <article className="feature-card">
+            <header>
+              <span className="badge badge-soon">Próximo</span>
+              <h3>Métricas del asistente</h3>
+            </header>
+            <p>
+              Visualizá tiempos de respuesta, engagement y salud del bot. Seguimiento central
+              por tenant para tu equipo de operaciones.
+            </p>
+          </article>
+        </div>
       </section>
 
-      <section className="status-board">
-        <h2>Cómo funciona</h2>
-        <ol className="steps">
-          <li className="step">
-            <span className="step__icon">1</span>
-            <div>
+      <section className="section">
+        <span className="section__title">Cómo funciona</span>
+        <div className="timeline">
+          <div className="timeline__item">
+            <span className="timeline__step">1</span>
+            <div className="timeline__content">
               <h4>Ingresá con Cognito</h4>
               <p>
-                Autenticación segura y administrada. Cada tenant recibe su
-                usuario y rol.
+                Cada tenant tiene sus usuarios asignados. nileDevs gestiona la autenticación
+                y los permisos automáticamente.
               </p>
             </div>
-          </li>
-          <li className="step">
-            <span className="step__icon">2</span>
-            <div>
+          </div>
+          <div className="timeline__item">
+            <span className="timeline__step">2</span>
+            <div className="timeline__content">
               <h4>Conectá Google Calendar</h4>
               <p>
-                En el dashboard podrás autorizar tu calendar vía OAuth 2.0 y
-                guardar el refresh token de forma segura.
+                El portal construye la URL de OAuth y guarda el refresh token en Secrets
+                Manager con prefijos por tenant.
               </p>
             </div>
-          </li>
-          <li className="step">
-            <span className="step__icon">3</span>
-            <div>
+          </div>
+          <div className="timeline__item">
+            <span className="timeline__step">3</span>
+            <div className="timeline__content">
               <h4>Monitoreá y ajustá</h4>
               <p>
-                Controlá citas, métricas y configuración de tu asistente
-                virtual desde un mismo panel.
+                Revisá métricas, estado de integraciones y próximos pasos desde un dashboard
+                limpio y accesible.
               </p>
             </div>
-          </li>
-        </ol>
+          </div>
+        </div>
       </section>
 
-      <section className="cta-section">
-        <div className="cta-card">
-          <div>
-            <h2>Tu portal de asistentes inteligentes</h2>
-            <p>
-              nileDevs AI Agents centraliza autenticación, integraciones y
-              métricas para que tus bots estén siempre listos.
-            </p>
-          </div>
-          <div className="cta-actions">
-            <button
-              className="btn btn-primary"
-              disabled={!loginUrl}
-              onClick={() => loginUrl && window.location.assign(loginUrl)}
-            >
-              Iniciar sesión
-            </button>
-            <a className="btn btn-outline" href="mailto:contacto@niledevs.com">
-              Hablar con nosotros
-            </a>
-          </div>
+      <section className="cta-card">
+        <div>
+          <h2>Tu portal para asistentes inteligentes está listo</h2>
+          <p>
+            nileDevs AI Agents unifica autenticación, integraciones y métricas para que tus
+            equipos se enfoquen en la experiencia del cliente.
+          </p>
+        </div>
+        <div className="cta-actions">
+          <button
+            className="button button--primary"
+            disabled={!loginUrl}
+            onClick={() => loginUrl && window.location.assign(loginUrl)}
+          >
+            Iniciar sesión
+          </button>
+          <a className="button button--outline" href="mailto:contacto@niledevs.com">
+            Hablar con nosotros
+          </a>
         </div>
       </section>
     </main>

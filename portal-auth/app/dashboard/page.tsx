@@ -402,23 +402,22 @@ function DashboardContent() {
 
       <header className="dashboard__header">
         <div>
-          <h1>Panel de nileDevs AI Agents</h1>
+          <span className="dashboard__eyebrow">nileDevs · Integraciones</span>
+          <h1>Panel de estado del tenant</h1>
           <p>
-            Aquí verás el estado de tus integraciones y podrás avanzar con la
-            sincronización de Google Calendar.
+            Revisá la sesión activa, el tenant asignado y el estado de Google Calendar para
+            continuar con tus automatizaciones.
           </p>
         </div>
-        <div className="dashboard__header-actions">
-          <button className="btn btn-outline" onClick={handleSignOut}>
+        <div className="dashboard__actions">
+          {tenantOk ? <span className="dashboard__tag">Tenant: {tenantOk.tenantName}</span> : null}
+          <button className="button button--outline" onClick={handleSignOut}>
             Cerrar sesión
           </button>
         </div>
       </header>
 
-      <section
-        className={`status-alert status-alert--${statusMessage.tone}`}
-        role="status"
-      >
+      <section className={`alert alert--${statusMessage.tone}`} role="status">
         <div>
           <h2>{statusMessage.title}</h2>
           <p>{statusMessage.description}</p>
@@ -428,58 +427,57 @@ function DashboardContent() {
         </div>
       </section>
 
-      <section className="stat-grid">
-        <article className="stat-card">
-          <span className="stat-card__label">Usuario autenticado</span>
-          <strong className="stat-card__value">
+      <section className="dashboard__stats">
+        <article className="stat-tile">
+          <span className="stat-tile__label">Usuario autenticado</span>
+          <strong className="stat-tile__value">
             {sessionStatus === "loading"
               ? "..."
               : session?.email ?? session?.sub ?? "Sin sesión"}
           </strong>
-          <p className="stat-card__hint">
-            Los usuarios permitidos deben añadirse al User Pool de Cognito y asociarse con un tenant.
+          <p className="stat-tile__hint">
+            Los usuarios deben estar dados de alta en el User Pool y asociados a un tenant válido.
           </p>
         </article>
-        <article className="stat-card">
-          <span className="stat-card__label">Tenant asignado</span>
-          <strong className="stat-card__value">
+        <article className="stat-tile">
+          <span className="stat-tile__label">Tenant asignado</span>
+          <strong className="stat-tile__value">
             {tenantStatus === "loading"
               ? "..."
               : tenantStatus === "ok" && tenantOk
                 ? tenantOk.tenantName
                 : "Sin tenant"}
           </strong>
-          <p className="stat-card__hint">
-            El endpoint <code>/tenants/me</code> devuelve la metadata asociada a tu correo.
+          <p className="stat-tile__hint">
+            La metadata proviene de <code>/tenants/me</code> y de DynamoDB.
           </p>
         </article>
-        <article className="stat-card">
-          <span className="stat-card__label">Estado del calendar</span>
-          <strong className="stat-card__value">
+        <article className="stat-tile">
+          <span className="stat-tile__label">Estado del Calendar</span>
+          <strong className="stat-tile__value">
             {isCalendarConnected ? "Conectado" : "Pendiente"}
           </strong>
-          <p className="stat-card__hint">
-            Una vez completes el flujo OAuth guardaremos el refresh token del tenant en Secrets Manager.
+          <p className="stat-tile__hint">
+            Guardamos el refresh token en Secrets Manager con prefijos por tenant.
           </p>
         </article>
       </section>
 
       {tenantDetails && (
-        <section className="integration-summary">
-          <h2>{tenantDetails.title}</h2>
-          <p>{tenantDetails.body}</p>
+        <section className="surface-card surface-card--strong">
+          <h2 className="surface-card__title">{tenantDetails.title}</h2>
+          <p className="surface-card__meta">{tenantDetails.body}</p>
           {tenantDetails.calendarSecret && (
-            <p>
+            <p className="surface-card__meta">
               Secret previsto: <code>{tenantDetails.calendarSecret}</code>
             </p>
           )}
           {tenantDetails.users && tenantDetails.users.length > 0 && (
-            <p>
-              Usuarios asociados:{" "}
-              <code>{tenantDetails.users.join(", ")}</code>
+            <p className="surface-card__meta">
+              Usuarios asociados: <code>{tenantDetails.users.join(", ")}</code>
             </p>
           )}
-          <p>
+          <p className="surface-card__meta">
             Estado de Google Calendar:{" "}
             <strong>{tenantDetails.calendarConnected ? "Conectado" : "Sin conectar"}</strong>
             {tenantDetails.calendarConnected && formattedCalendarConnectedAt && (
@@ -489,17 +487,18 @@ function DashboardContent() {
         </section>
       )}
 
-      <section className="integration-panel">
+      <section className="surface-card integration-card">
         <div>
-          <h2>Integrar Google Calendar</h2>
-          <p>
-            Este flujo ejecutará el handler <code>/calendar/callback</code> en tu API,
-            intercambiará el código por tokens y almacenará el refresh token del
-            tenant.
+          <h2 className="surface-card__title">Integrar Google Calendar</h2>
+          <p className="surface-card__meta">
+            Autorizá Google Calendar para que el asistente pueda reservar turnos y sincronizar
+            agendas utilizando el refresh token almacenado en Secrets Manager.
           </p>
+        </div>
+        <div className="integration-card__actions">
           {!isCalendarConnected && (
             <button
-              className="btn btn-primary"
+              className="button button--primary"
               disabled={!canConnectCalendar}
               onClick={handleConnectCalendar}
             >
@@ -508,7 +507,7 @@ function DashboardContent() {
           )}
           {isCalendarConnected && (
             <button
-              className="btn btn-outline"
+              className="button button--secondary"
               onClick={handleDisconnectCalendar}
               disabled={isDisconnecting}
             >
@@ -535,16 +534,14 @@ function DashboardContent() {
               </div>
             )}
         </div>
-        <div className="integration-panel__meta">
-          <h3>Qué haremos a continuación</h3>
-          <ul>
+        <div className="surface-card__meta">
+          <strong>Qué haremos a continuación</strong>
+          <ul className="integration-card__list">
             <li>Guardar secretos por tenant en AWS Secrets Manager.</li>
             <li>
               Invocar Google OAuth para obtener <code>refresh_token</code>.
             </li>
-            <li>
-              Exponer métricas y salud del asistente según cada tenant.
-            </li>
+            <li>Exponer métricas y salud del asistente según cada tenant.</li>
           </ul>
         </div>
       </section>
