@@ -1,9 +1,27 @@
 "use client";
 
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 
+export const dynamic = "force-dynamic";
+
 export default function Dashboard() {
+  return (
+    <Suspense
+      fallback={
+        <main className="portal dashboard">
+          <div className="glow glow-top" />
+          <div className="glow glow-bottom" />
+          <p style={{ color: "#cbd5f5" }}>Cargando dashboard...</p>
+        </main>
+      }
+    >
+      <DashboardContent />
+    </Suspense>
+  );
+}
+
+function DashboardContent() {
   const searchParams = useSearchParams();
   const code = searchParams.get("code");
   const error = searchParams.get("error");
@@ -54,9 +72,7 @@ export default function Dashboard() {
         <div>
           <h2>{statusMessage.title}</h2>
           <p>{statusMessage.description}</p>
-          {code && (
-            <code className="status-alert__code">code={code}</code>
-          )}
+          {code && <code className="status-alert__code">code={code}</code>}
         </div>
       </section>
 
