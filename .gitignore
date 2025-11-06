@@ -102,3 +102,6 @@ Dockerfile
 !package.json
 !tsconfig.json
 !bin/
+# Next.js build output
+.next/
+

@@ -27,71 +27,175 @@ export default function Home() {
     () => requiredEnv.filter((key) => !process.env[key]),
     []
   );
-
-  const loginUrl =
-    missingEnv.length === 0 ? buildCognitoLoginUrl() : undefined;
+  const loginUrl = missingEnv.length === 0 ? buildCognitoLoginUrl() : undefined;
 
   return (
-    <main className="container">
-      {missingEnv.length > 0 && (
-        <aside className="notice">
-          <strong>Configuración pendiente:</strong> completá las variables{" "}
-          <code>NEXT_PUBLIC_COGNITO_DOMAIN</code>,{" "}
-          <code>NEXT_PUBLIC_COGNITO_CLIENT_ID</code> y{" "}
-          <code>NEXT_PUBLIC_COGNITO_REDIRECT_URI</code> para habilitar el inicio
-          de sesión.
-        </aside>
-      )}
-      <header className="hero">
-        <h1>Portal de Integraciones Opal Dental</h1>
-        <p>
-          Conecta tu calendario, revisa métricas y administra a tu asistente
-          virtual desde un solo lugar.
-        </p>
-      </header>
+    <main className="portal">
+      <div className="glow glow-top" />
+      <div className="glow glow-bottom" />
 
-      <section className="card">
-        <h2>Ingreso</h2>
-        <p>
-          Usamos Amazon Cognito para autenticar a los administradores del
-          bot. Configurá las variables y hacé clic en el siguiente botón.
-        </p>
-        <button
-          className="primary"
-          disabled={!loginUrl}
-          onClick={() => loginUrl && window.location.assign(loginUrl)}
-        >
-          Ingresar con Cognito
-        </button>
-        {missingEnv.length > 0 && (
-          <p className="hint">
-            Variables faltantes: {missingEnv.join(", ")}.
+      <section className="hero">
+        <div className="hero__content">
+          <span className="hero__eyebrow">Opal Dental · Portal de integraciones</span>
+          <h1>Gestioná tu asistente virtual con una sola plataforma</h1>
+          <p>
+            Conectá calendarios, revisá métricas y administrá la experiencia de tus pacientes
+            desde un panel centralizado pensado para clínicas modernas.
           </p>
-        )}
+          <div className="hero__actions">
+            <button
+              className="btn btn-primary"
+              disabled={!loginUrl}
+              onClick={() => loginUrl && window.location.assign(loginUrl)}
+            >
+              Ingresar al portal
+            </button>
+            <a
+              className="btn btn-ghost"
+              href="https://docs.google.com"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Ver documentación
+            </a>
+          </div>
+          {missingEnv.length > 0 && (
+            <p className="hero__hint">
+              Ajustá las variables:{" "}
+              <code>NEXT_PUBLIC_COGNITO_DOMAIN</code>,{" "}
+              <code>NEXT_PUBLIC_COGNITO_CLIENT_ID</code>,{" "}
+              <code>NEXT_PUBLIC_COGNITO_REDIRECT_URI</code>.
+            </p>
+          )}
+        </div>
+
+        <aside className="hero__panel">
+          <h2>Resumen de hoy</h2>
+          <dl>
+            <div>
+              <dt>Citas confirmadas</dt>
+              <dd>24</dd>
+            </div>
+            <div>
+              <dt>Respuestas perfectas</dt>
+              <dd>92%</dd>
+            </div>
+            <div>
+              <dt>Pacientes activos</dt>
+              <dd>58</dd>
+            </div>
+          </dl>
+          <p>Los datos reales aparecerán cuando conectemos métricas en producción.</p>
+        </aside>
       </section>
 
-      <section className="grid">
-        <article className="card">
-          <h3>Integrar Google Calendar</h3>
+      <section className="feature-grid">
+        <article className="feature-card">
+          <header>
+            <span className="badge badge-ready">Disponible</span>
+            <h3>Autenticación segura con Cognito</h3>
+          </header>
           <p>
-            Próximamente: una vez que completes el flujo OAuth, podrás
-            confirmar disponibilidad y crear eventos automáticamente desde
-            aquí.
+            Administración de usuarios con login federado, Hosted UI y
+            detección de configuración faltante para entornos locales.
           </p>
-          <button className="secondary" disabled>
-            Conectar Calendar (próximamente)
+          <ul>
+            <li>Inicio de sesión con Authorization Code Grant</li>
+            <li>Gestión de sesiones y cierre controlado</li>
+            <li>Configuración multi-tenant por environment</li>
+          </ul>
+        </article>
+
+        <article className="feature-card">
+          <header>
+            <span className="badge badge-soon">En progreso</span>
+            <h3>Integración con Google Calendar</h3>
+          </header>
+          <p>
+            Guardaremos el refresh token de cada tenant y confirmaremos horarios reales antes
+            de comprometer citas con pacientes.
+          </p>
+          <button className="btn btn-muted" disabled>
+            Conectar calendario (próximamente)
           </button>
         </article>
-        <article className="card">
-          <h3>Métricas del bot</h3>
+
+        <article className="feature-card">
+          <header>
+            <span className="badge badge-soon">En progreso</span>
+            <h3>Métricas y health del bot</h3>
+          </header>
           <p>
-            Sección reservada para reportes de conversaciones, intents y
-            SLA. Podrás verla cuando activemos el pipeline de métricas.
+            Reportes de satisfacción, tiempos de respuesta y volumen de conversaciones para
+            que puedas medir rendimiento y oportunidades.
           </p>
-          <button className="secondary" disabled>
-            Ver métricas (próximamente)
+          <button className="btn btn-muted" disabled>
+            Ver tablero (próximamente)
           </button>
         </article>
+      </section>
+
+      <section className="status-board">
+        <h2>Onboarding guiado</h2>
+        <ol className="steps">
+          <li className="step">
+            <span className="step__icon">1</span>
+            <div>
+              <h4>Conectá tu cuenta</h4>
+              <p>
+                Configurá Cognito con el dominio generado para tu tenant e inicia sesión con
+                tu usuario administrador.
+              </p>
+            </div>
+          </li>
+          <li className="step">
+            <span className="step__icon">2</span>
+            <div>
+              <h4>Autoriza Google Calendar</h4>
+              <p>
+                Seguiremos el flujo OAuth para guardar el refresh token de tu calendar y así
+                poder confirmar disponibilidad al instante.
+              </p>
+            </div>
+          </li>
+          <li className="step">
+            <span className="step__icon">3</span>
+            <div>
+              <h4>Activa métricas y alertas</h4>
+              <p>
+                Visualizá reportes, niveles de satisfacción y health checks para asegurar que
+                tu asistente siempre esté disponible.
+              </p>
+            </div>
+          </li>
+        </ol>
+      </section>
+
+      <section className="cta-section">
+        <div className="cta-card">
+          <div>
+            <h2>Siguiente paso: conectar tu calendar en vivo</h2>
+            <p>
+              Ya tenés autenticación y UI. Agregá tus credenciales de Google en Secrets Manager
+              para habilitar la reserva real de citas.
+            </p>
+          </div>
+          <div className="cta-actions">
+            <button
+              className="btn btn-primary"
+              disabled={!loginUrl}
+              onClick={() => loginUrl && window.location.assign(loginUrl)}
+            >
+              Entrar al portal
+            </button>
+            <a
+              className="btn btn-outline"
+              href="mailto:soporte@opaldental.com"
+            >
+              Hablar con soporte
+            </a>
+          </div>
+        </div>
       </section>
     </main>
   );
