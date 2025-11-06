@@ -10,6 +10,8 @@ type GraphState = {
   recent_window: string;
   decision?: DecisionLite & { isCalendar?: boolean };
   final_answer: string;
+  tenantId: string;
+  userId: string;
 };
 
 @injectable()
@@ -43,6 +45,16 @@ export class DentalWorkflow {
         reducer: (_p, n) => n,
       }),
       final_answer: Annotation<string>({
+        value: String,
+        default: () => "",
+        reducer: (_p, n) => n,
+      }),
+      tenantId: Annotation<string>({
+        value: String,
+        default: () => "",
+        reducer: (_p, n) => n,
+      }),
+      userId: Annotation<string>({
         value: String,
         default: () => "",
         reducer: (_p, n) => n,
@@ -134,8 +146,8 @@ export class DentalWorkflow {
       recent_window: state.recent_window ?? "",
       now_iso: now.toISOString(),
       tz,
-      // opcionalmente podrías pasar tenantId/userId si los añades al GraphState
-      // tenantId, userId
+      tenantId: state.tenantId,
+      userId: state.userId,
     });
 
     const answer = (a ?? "").trim();
@@ -152,13 +164,17 @@ export class DentalWorkflow {
   async run(
     message: string,
     facts_header: string,
-    recent_window: string
+    recent_window: string,
+    tenantId: string,
+    userId: string
   ): Promise<GraphState> {
     return this.app.invoke({
       message,
       facts_header,
       recent_window,
       final_answer: "",
+      tenantId,
+      userId,
     });
   }
 }

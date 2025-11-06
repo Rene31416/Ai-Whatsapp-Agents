@@ -14,6 +14,7 @@ import { PostOpsService } from "../services/post.ops.service";
 import { ContactFactsExtractorService } from "../prompts/facts.prompt";
 import { CalendarPromptService } from "../prompts/calendar.prompt";
 import { DentalWorkflow } from "../workflow/main.workflow";
+import { CalendarService } from "../services/calendar.service";
 // import { DentalWorkflow } from "../chat/dental.workflow";
 
 const container = new Container({ defaultScope: "Singleton" });
@@ -23,6 +24,7 @@ container.bind(ChatRepository).toSelf();
 container.bind(MemoryRepository).toSelf();
 container.bind(WhatsappService).toSelf();
 container.bind(PostOpsService).toSelf();
+container.bind(CalendarService).toSelf();
 container.bind(ChatService).toSelf();
 
 // Controllers / misc

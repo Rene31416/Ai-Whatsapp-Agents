@@ -93,6 +93,7 @@
       "http://localhost:3000/"
     ],
     "authPortalCognitoDomainPrefix": "nile-devs-portal",
-    "authPortalTenantTableKmsKeyArn": "arn:aws:kms:us-east-1:279019749395:key/79a075c0-18c9-4323-b12f-66ce7aed4fe2"
+    "authPortalTenantTableKmsKeyArn": "arn:aws:kms:us-east-1:279019749395:key/79a075c0-18c9-4323-b12f-66ce7aed4fe2",
+    "calendarTokenSecretPrefix": "AuthPortalStack/calendar/token/tenant-"
   }
 }

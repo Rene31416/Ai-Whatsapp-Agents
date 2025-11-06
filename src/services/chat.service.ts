@@ -106,12 +106,15 @@ export class ChatService {
         }
       }
 
-      // 4) Enviar WhatsApp
+      // 4) Enviar WhatsApp (si falla igualmente persistimos para no perder contexto)
       const sent = await this.sendWhatsApp(job, finalReply);
 
-      // 5) Persist agent si se envió
-      if (sent) {
-        await this.persistAgent(job, finalReply);
+      // 5) Persist agent siempre que haya reply, aunque el envío falle (mantiene historial local)
+      await this.persistAgent(job, finalReply);
+      if (!sent) {
+        this.log.warn("chat.persist.agent.unsent", {
+          note: "WhatsApp send failed; reply persisted for context anyway",
+        });
       }
 
       // Logs legibles consola local
@@ -207,7 +210,13 @@ export class ChatService {
     confidence: number;
     isCalendar: boolean;
   }> {
-    const state = await this.wf.run(job.combinedText, w.factsHeader, w.recentWindow);
+    const state = await this.wf.run(
+      job.combinedText,
+      w.factsHeader,
+      w.recentWindow,
+      job.tenantId,
+      job.userId
+    );
 
     const reply = (state?.final_answer ?? "").trim();
     const identify_intent = !!state?.decision?.identify_intent;

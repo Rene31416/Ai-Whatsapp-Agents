@@ -61,19 +61,28 @@ export const handler = async (event: any) => {
 
     const tenant = items[0];
     const tenantId = tenant.tenantId ?? "unknown";
-    const tokenSecret =
-      tenant.calendarTokenSecret ?? `${tokenSecretPrefix}${tenantId}`;
+    const fallbackSecretName = `${tokenSecretPrefix}${tenantId}`;
 
+    const secretCandidates = new Set(
+      [
+        tenant.calendarTokenSecret?.trim(),
+        fallbackSecretName,
+      ].filter((value): value is string => Boolean(value && value.length > 0))
+    );
+
+    let calendarTokenSecret = tenant.calendarTokenSecret ?? fallbackSecretName;
     let calendarConnected = false;
     let calendarConnectedAt: string | null = null;
 
-    if (tokenSecret && tokenSecret.trim().length > 0) {
+    for (const candidate of secretCandidates) {
       try {
         const secretValue = await secretsClient.send(
           new GetSecretValueCommand({
-            SecretId: tokenSecret,
+            SecretId: candidate,
           })
         );
+
+        calendarTokenSecret = candidate;
 
         if (secretValue.SecretString) {
           try {
@@ -89,12 +98,15 @@ export const handler = async (event: any) => {
             console.error("Failed to parse calendar secret payload", parseErr);
           }
         }
+
+        if (calendarConnected) {
+          break;
+        }
       } catch (err: any) {
         if (err?.name === "ResourceNotFoundException") {
-          calendarConnected = false;
-        } else {
-          console.error("Unable to read calendar secret metadata", err);
+          continue;
         }
+        console.error("Unable to read calendar secret metadata", err);
       }
     }
 
@@ -102,7 +114,7 @@ export const handler = async (event: any) => {
       status: "ok",
       tenantId,
       tenantName: tenant.tenantName ?? tenantId,
-      calendarTokenSecret: tokenSecret,
+      calendarTokenSecret,
       users: tenant.users ?? [],
       calendarConnected,
       calendarConnectedAt,

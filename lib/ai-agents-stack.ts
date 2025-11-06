@@ -26,6 +26,14 @@ export class AiAgentsStack extends cdk.Stack {
       encryptionKey: dataKey,
     });
     const whatsAppSecretArn = `arn:aws:secretsmanager:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:secret:WhatsappCredentials-`;
+    const calendarTokenSecretPrefix =
+      (this.node.tryGetContext("calendarTokenSecretPrefix") as string | undefined) ??
+      "AuthPortalStack/calendar/token/tenant-";
+    const googleOAuthSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "SharedGoogleOAuthSecret",
+      "AuthPortalStack-google-oauth-config"
+    );
 
     // 🏢 DynamoDB tables
     const tenantTable = new dynamodb.Table(this, "TenantClinicMetadata", {
@@ -203,6 +211,8 @@ export class AiAgentsStack extends cdk.Stack {
         CHAT_SESSIONS_TABLE_NAME: chatTable.tableName,
         // 🧠 NEW: pass memory table name
         MEMORY_TABLE_NAME: memoryTable.tableName,
+        GOOGLE_OAUTH_SECRET_ARN: googleOAuthSecret.secretArn,
+        CALENDAR_TOKEN_SECRET_PREFIX: calendarTokenSecretPrefix,
       },
     });
 
@@ -213,6 +223,7 @@ export class AiAgentsStack extends cdk.Stack {
     memoryTable.grantReadWriteData(chatServiceLambda);
 
     geminiSecret.grantRead(chatServiceLambda);
+    googleOAuthSecret.grantRead(chatServiceLambda);
     dataKey.grantEncryptDecrypt(chatServiceLambda);
 
     chatServiceLambda.addToRolePolicy(
@@ -246,6 +257,15 @@ export class AiAgentsStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
         resources: [`${whatsAppSecretArn}*`],
+      })
+    );
+
+    chatServiceLambda.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${calendarTokenSecretPrefix}*`,
+        ],
       })
     );
 
