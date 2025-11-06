@@ -25,6 +25,7 @@ export default function Home() {
     }),
     []
   );
+
   const missingEnv = useMemo(() => {
     const missing: string[] = [];
     if (!config.domain) missing.push("NEXT_PUBLIC_COGNITO_DOMAIN");
@@ -32,7 +33,9 @@ export default function Home() {
     if (!config.redirectUri) missing.push("NEXT_PUBLIC_COGNITO_REDIRECT_URI");
     return missing;
   }, [config]);
-  const loginUrl = missingEnv.length === 0 ? buildCognitoLoginUrl() : undefined;
+
+  const loginUrl =
+    missingEnv.length === 0 ? buildCognitoLoginUrl() : undefined;
 
   return (
     <main className="portal">
@@ -41,11 +44,11 @@ export default function Home() {
 
       <section className="hero">
         <div className="hero__content">
-          <span className="hero__eyebrow">Opal Dental · Portal de integraciones</span>
-          <h1>Gestioná tu asistente virtual con una sola plataforma</h1>
+          <span className="hero__eyebrow">nileDevs · AI Agents</span>
+          <h1>Automatizá tus flujos con asistentes listos para producción</h1>
           <p>
-            Conectá calendarios, revisá métricas y administrá la experiencia de tus pacientes
-            desde un panel centralizado pensado para clínicas modernas.
+            Gestioná tus bots de WhatsApp, integra calendarios y monitoreá
+            métricas clave desde un portal seguro diseñado para tus tenants.
           </p>
           <div className="hero__actions">
             <button
@@ -53,15 +56,10 @@ export default function Home() {
               disabled={!loginUrl}
               onClick={() => loginUrl && window.location.assign(loginUrl)}
             >
-              Ingresar al portal
+              Ingresar con Cognito
             </button>
-            <a
-              className="btn btn-ghost"
-              href="https://docs.google.com"
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              Ver documentación
+            <a className="btn btn-ghost" href="mailto:contacto@niledevs.com">
+              Contactar soporte
             </a>
           </div>
           {missingEnv.length > 0 && (
@@ -75,101 +73,93 @@ export default function Home() {
         </div>
 
         <aside className="hero__panel">
-          <h2>Resumen de hoy</h2>
+          <h2>Panel de acceso</h2>
+          <p>
+            Luego del login verás el dashboard de tu tenant y el botón para
+            conectar Google Calendar.
+          </p>
           <dl>
             <div>
-              <dt>Citas confirmadas</dt>
-              <dd>24</dd>
+              <dt>Tenants activos</dt>
+              <dd>12</dd>
             </div>
             <div>
-              <dt>Respuestas perfectas</dt>
-              <dd>92%</dd>
+              <dt>Asistentes configurados</dt>
+              <dd>31</dd>
             </div>
             <div>
-              <dt>Pacientes activos</dt>
-              <dd>58</dd>
+              <dt>SLA promedio</dt>
+              <dd>98%</dd>
             </div>
           </dl>
-          <p>Los datos reales aparecerán cuando conectemos métricas en producción.</p>
         </aside>
       </section>
 
       <section className="feature-grid">
         <article className="feature-card">
           <header>
-            <span className="badge badge-ready">Disponible</span>
-            <h3>Autenticación segura con Cognito</h3>
+            <span className="badge badge-ready">Prod ready</span>
+            <h3>Autenticación multi-tenant</h3>
           </header>
           <p>
-            Administración de usuarios con login federado, Hosted UI y
-            detección de configuración faltante para entornos locales.
+            Administrá el acceso a tu portal con Cognito Hosted UI, login
+            federado y políticas flexibles de seguridad.
           </p>
-          <ul>
-            <li>Inicio de sesión con Authorization Code Grant</li>
-            <li>Gestión de sesiones y cierre controlado</li>
-            <li>Configuración multi-tenant por environment</li>
-          </ul>
         </article>
 
         <article className="feature-card">
           <header>
-            <span className="badge badge-soon">En progreso</span>
-            <h3>Integración con Google Calendar</h3>
+            <span className="badge badge-soon">Próximo</span>
+            <h3>Sincronización con Google Calendar</h3>
           </header>
           <p>
-            Guardaremos el refresh token de cada tenant y confirmaremos horarios reales antes
-            de comprometer citas con pacientes.
+            Guardá el refresh token en Secrets Manager y confirmá
+            disponibilidad real antes de reservar turnos.
           </p>
-          <button className="btn btn-muted" disabled>
-            Conectar calendario (próximamente)
-          </button>
         </article>
 
         <article className="feature-card">
           <header>
-            <span className="badge badge-soon">En progreso</span>
-            <h3>Métricas y health del bot</h3>
+            <span className="badge badge-soon">Próximo</span>
+            <h3>Métricas del asistente</h3>
           </header>
           <p>
-            Reportes de satisfacción, tiempos de respuesta y volumen de conversaciones para
-            que puedas medir rendimiento y oportunidades.
+            Reportes de engagement, tiempos de respuesta y salud del bot para
+            cada tenant.
           </p>
-          <button className="btn btn-muted" disabled>
-            Ver tablero (próximamente)
-          </button>
         </article>
       </section>
 
       <section className="status-board">
-        <h2>Onboarding guiado</h2>
+        <h2>Cómo funciona</h2>
         <ol className="steps">
           <li className="step">
             <span className="step__icon">1</span>
             <div>
-              <h4>Conectá tu cuenta</h4>
+              <h4>Ingresá con Cognito</h4>
               <p>
-                Configurá Cognito con el dominio generado para tu tenant e inicia sesión con
-                tu usuario administrador.
+                Autenticación segura y administrada. Cada tenant recibe su
+                usuario y rol.
               </p>
             </div>
           </li>
           <li className="step">
             <span className="step__icon">2</span>
             <div>
-              <h4>Autoriza Google Calendar</h4>
+              <h4>Conectá Google Calendar</h4>
               <p>
-                Seguiremos el flujo OAuth para guardar el refresh token de tu calendar y así
-                poder confirmar disponibilidad al instante.
+                En el dashboard podrás autorizar tu calendar vía OAuth 2.0 y
+                guardar el refresh token de forma segura.
               </p>
             </div>
           </li>
           <li className="step">
             <span className="step__icon">3</span>
             <div>
-              <h4>Activa métricas y alertas</h4>
+              <h4>Monitoreá y ajustá</h4>
               <p>
-                Visualizá reportes, niveles de satisfacción y health checks para asegurar que
-                tu asistente siempre esté disponible.
+                Controlá citas, métricas y configuración de tu asistente
+                virtual desde un mismo panel.
               </p>
             </div>
           </li>
@@ -179,10 +169,10 @@ export default function Home() {
       <section className="cta-section">
         <div className="cta-card">
           <div>
-            <h2>Siguiente paso: conectar tu calendar en vivo</h2>
+            <h2>Tu portal de asistentes inteligentes</h2>
             <p>
-              Ya tenés autenticación y UI. Agregá tus credenciales de Google en Secrets Manager
-              para habilitar la reserva real de citas.
+              nileDevs AI Agents centraliza autenticación, integraciones y
+              métricas para que tus bots estén siempre listos.
             </p>
           </div>
           <div className="cta-actions">
@@ -191,13 +181,10 @@ export default function Home() {
               disabled={!loginUrl}
               onClick={() => loginUrl && window.location.assign(loginUrl)}
             >
-              Entrar al portal
+              Iniciar sesión
             </button>
-            <a
-              className="btn btn-outline"
-              href="mailto:soporte@opaldental.com"
-            >
-              Hablar con soporte
+            <a className="btn btn-outline" href="mailto:contacto@niledevs.com">
+              Hablar con nosotros
             </a>
           </div>
         </div>
