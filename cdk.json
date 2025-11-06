@@ -83,6 +83,16 @@
     "@aws-cdk/aws-elasticloadbalancingV2:albDualstackWithoutPublicIpv4SecurityGroupRulesDefault": true,
     "@aws-cdk/aws-iam:oidcRejectUnauthorizedConnections": true,
     "@aws-cdk/core:enableAdditionalMetadataCollection": true,
-    "@aws-cdk/aws-lambda:createNewPoliciesWithAddToRolePolicy": true
+    "@aws-cdk/aws-lambda:createNewPoliciesWithAddToRolePolicy": true,
+    "authPortalCallbackUrls": [
+      "https://ai-whatsapp-agents.vercel.app/api/auth/callback/cognito",
+      "http://localhost:3000/api/auth/callback/cognito"
+    ],
+    "authPortalLogoutUrls": [
+      "https://ai-whatsapp-agents.vercel.app/",
+      "http://localhost:3000/"
+    ],
+    "authPortalCognitoDomainPrefix": "nile-devs-portal",
+    "authPortalTenantTableKmsKeyArn": "arn:aws:kms:us-east-1:279019749395:key/79a075c0-18c9-4323-b12f-66ce7aed4fe2"
   }
 }

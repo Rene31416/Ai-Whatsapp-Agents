@@ -8,6 +8,7 @@ import * as nodeLambda from "aws-cdk-lib/aws-lambda-nodejs";
 import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import * as kms from "aws-cdk-lib/aws-kms";
 
 export interface AuthPortalStackProps extends cdk.StackProps {
   /**
@@ -27,6 +28,10 @@ export interface AuthPortalStackProps extends cdk.StackProps {
    */
   readonly tenantTableName?: string;
   /**
+   * Optional KMS key ARN used to encrypt the tenant metadata table.
+   */
+  readonly tenantTableKmsKeyArn?: string;
+  /**
    * Optional ARN or name of the base secret where calendar credentials will be stored.
    */
   readonly calendarSecretBaseArn?: string;
@@ -36,9 +41,25 @@ export class AuthPortalStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: AuthPortalStackProps) {
     super(scope, id, props);
 
+    const callbackUrlsFromContext = this.node.tryGetContext("authPortalCallbackUrls") as
+      | string[]
+      | undefined;
+    const logoutUrlsFromContext = this.node.tryGetContext("authPortalLogoutUrls") as
+      | string[]
+      | undefined;
+    const domainPrefixFromContext = this.node.tryGetContext("authPortalCognitoDomainPrefix") as
+      | string
+      | undefined;
+    const tenantTableKmsKeyArnFromContext = this.node.tryGetContext(
+      "authPortalTenantTableKmsKeyArn"
+    ) as string | undefined;
+
     const callbackUrls =
-      props?.callbackUrls ?? ["http://localhost:3000/api/auth/callback/cognito"];
-    const logoutUrls = props?.logoutUrls ?? ["http://localhost:3000/"];
+      props?.callbackUrls ??
+      callbackUrlsFromContext ??
+      ["http://localhost:3000/api/auth/callback/cognito"];
+    const logoutUrls =
+      props?.logoutUrls ?? logoutUrlsFromContext ?? ["http://localhost:3000/"];
 
     const userPool = new cognito.UserPool(this, "PortalUserPool", {
       selfSignUpEnabled: false,
@@ -80,7 +101,9 @@ export class AuthPortalStack extends cdk.Stack {
     });
 
     const domainPrefix =
-      props?.cognitoDomainPrefix ?? `portal-${this.account?.slice(-6) ?? "demo"}`;
+      props?.cognitoDomainPrefix ??
+      domainPrefixFromContext ??
+      `portal-${this.account?.slice(-6) ?? "demo"}`;
 
     const userPoolDomain = userPool.addDomain("PortalUserPoolDomain", {
       cognitoDomain: {
@@ -113,6 +136,7 @@ export class AuthPortalStack extends cdk.Stack {
           externalModules: [],
           target: "es2020",
         },
+        timeout: cdk.Duration.seconds(20),
         environment: {
           GOOGLE_OAUTH_SECRET_ARN: oauthConfigSecret.secretArn,
           CALENDAR_TOKEN_SECRET_PREFIX: tokenSecretPrefix,
@@ -129,6 +153,7 @@ export class AuthPortalStack extends cdk.Stack {
           "secretsmanager:PutSecretValue",
           "secretsmanager:UpdateSecret",
           "secretsmanager:DescribeSecret",
+          "secretsmanager:DeleteSecret",
         ],
         resources: [
           `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${tokenSecretPrefix}*`,
@@ -140,6 +165,8 @@ export class AuthPortalStack extends cdk.Stack {
       props?.tenantTableName ??
       (this.node.tryGetContext("tenantTableName") as string | undefined) ??
       "AiAgentsStack-TenantClinicMetadataE1836452-7A05UY6RC43G";
+    const tenantTableKmsKeyArn =
+      props?.tenantTableKmsKeyArn ?? tenantTableKmsKeyArnFromContext;
 
     const tenantMetadataHandler = new nodeLambda.NodejsFunction(
       this,
@@ -152,11 +179,21 @@ export class AuthPortalStack extends cdk.Stack {
           externalModules: [],
           target: "es2020",
         },
+        timeout: cdk.Duration.seconds(15),
         environment: {
           TENANT_TABLE_NAME: tenantTableName,
           CALENDAR_TOKEN_SECRET_PREFIX: tokenSecretPrefix,
         },
       }
+    );
+
+    tenantMetadataHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+        resources: [
+          `arn:aws:secretsmanager:${this.region}:${this.account}:secret:${tokenSecretPrefix}*`,
+        ],
+      })
     );
 
     if (tenantTableName) {
@@ -166,6 +203,14 @@ export class AuthPortalStack extends cdk.Stack {
         tenantTableName
       );
       tenantTable.grantReadData(tenantMetadataHandler);
+      if (tenantTableKmsKeyArn) {
+        const tenantTableKey = kms.Key.fromKeyArn(
+          this,
+          "TenantMetadataTableKey",
+          tenantTableKmsKeyArn
+        );
+        tenantTableKey.grantDecrypt(tenantMetadataHandler);
+      }
     }
 
     const httpApi = new apigwv2.HttpApi(this, "AuthPortalHttpApi", {
@@ -181,6 +226,15 @@ export class AuthPortalStack extends cdk.Stack {
       methods: [apigwv2.HttpMethod.POST],
       integration: new integrations.HttpLambdaIntegration(
         "CalendarAuthIntegration",
+        calendarAuthHandler
+      ),
+    });
+
+    httpApi.addRoutes({
+      path: "/calendar/token",
+      methods: [apigwv2.HttpMethod.DELETE],
+      integration: new integrations.HttpLambdaIntegration(
+        "CalendarAuthDeleteIntegration",
         calendarAuthHandler
       ),
     });

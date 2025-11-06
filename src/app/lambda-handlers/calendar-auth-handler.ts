@@ -3,6 +3,7 @@ import {
   GetSecretValueCommand,
   PutSecretValueCommand,
   CreateSecretCommand,
+  DeleteSecretCommand,
 } from "@aws-sdk/client-secrets-manager";
 
 const secretsClient = new SecretsManagerClient({});
@@ -26,17 +27,15 @@ interface GoogleConfig {
 export const handler = async (event: any) => {
   console.log("Incoming event:", JSON.stringify(event));
 
+  const method =
+    (event?.requestContext?.http?.method ??
+      event?.httpMethod ??
+      "POST")?.toString()?.toUpperCase() ?? "POST";
+
   const body =
     typeof event.body === "string" ? JSON.parse(event.body || "{}") : event.body || {};
 
-  const code = body?.code;
-  const tenantId = body?.tenantId ?? "default";
-  if (!code) {
-    return jsonResponse(
-      400,
-      { status: "error", message: "Missing OAuth 'code' in request body." }
-    );
-  }
+  const tenantId = (body?.tenantId as string | undefined) ?? "default";
 
   const oauthSecretArn = process.env.GOOGLE_OAUTH_SECRET_ARN;
   const tokenSecretPrefix = process.env.CALENDAR_TOKEN_SECRET_PREFIX;
@@ -49,7 +48,51 @@ export const handler = async (event: any) => {
     );
   }
 
+  if (!tenantId || tenantId.trim().length === 0) {
+    return jsonResponse(
+      400,
+      { status: "error", message: "Missing 'tenantId' in request body." }
+    );
+  }
+
+  if (method === "DELETE") {
+    try {
+      console.log("Disconnecting calendar integration for tenant", { tenantId });
+      await removeTokens({
+        tokenSecretPrefix,
+        tenantId,
+      });
+      return jsonResponse(200, {
+        status: "ok",
+        message: "Calendar disconnected successfully.",
+        tenantId,
+      });
+    } catch (err: any) {
+      console.error("Failed to disconnect calendar integration", err);
+      return jsonResponse(
+        500,
+        { status: "error", message: err?.message ?? "Failed to disconnect calendar." }
+      );
+    }
+  }
+
+  if (method !== "POST") {
+    return jsonResponse(
+      405,
+      { status: "error", message: `Method ${method} not allowed.` }
+    );
+  }
+
+  const code = body?.code as string | undefined;
+  if (!code) {
+    return jsonResponse(
+      400,
+      { status: "error", message: "Missing OAuth 'code' in request body." }
+    );
+  }
+
   try {
+    console.log("Loading Google OAuth config");
     const googleConfig = await loadGoogleConfig(oauthSecretArn);
     if (!googleConfig.clientId || !googleConfig.clientSecret || !googleConfig.redirectUri) {
       return jsonResponse(500, {
@@ -59,6 +102,10 @@ export const handler = async (event: any) => {
       });
     }
 
+    console.log("Exchanging authorization code for tokens", {
+      tenantId,
+      redirectUri: googleConfig.redirectUri,
+    });
     const tokenResp = await exchangeCodeForTokens({
       code,
       clientId: googleConfig.clientId,
@@ -84,6 +131,7 @@ export const handler = async (event: any) => {
       );
     }
 
+    console.log("Storing refresh token for tenant", { tenantId });
     await storeTokens({
       tokenSecretPrefix,
       tenantId,
@@ -145,6 +193,11 @@ async function exchangeCodeForTokens(params: {
   });
 
   const json = (await response.json()) as TokenResponse;
+  console.log("Google token endpoint response", {
+    status: response.status,
+    hasRefreshToken: Boolean(json.refresh_token),
+    error: json.error,
+  });
   if (!response.ok) {
     console.error("Google token endpoint error:", json);
     return json;
@@ -162,6 +215,7 @@ async function storeTokens(params: {
   const secretString = JSON.stringify(payload);
 
   try {
+    console.log("Updating existing secret", { secretName });
     await secretsClient.send(
       new PutSecretValueCommand({
         SecretId: secretName,
@@ -170,6 +224,7 @@ async function storeTokens(params: {
     );
   } catch (err: any) {
     if (err?.name === "ResourceNotFoundException") {
+      console.log("Secret not found, creating new secret", { secretName });
       await secretsClient.send(
         new CreateSecretCommand({
           Name: secretName,
@@ -177,8 +232,29 @@ async function storeTokens(params: {
         })
       );
     } else {
+      console.error("Failed to store tokens in Secrets Manager", err);
       throw err;
     }
+  }
+}
+
+async function removeTokens(params: { tokenSecretPrefix: string; tenantId: string }) {
+  const { tokenSecretPrefix, tenantId } = params;
+  const secretName = `${tokenSecretPrefix}${tenantId}`;
+  try {
+    await secretsClient.send(
+      new DeleteSecretCommand({
+        SecretId: secretName,
+        ForceDeleteWithoutRecovery: true,
+      })
+    );
+    console.log("Calendar secret deleted", { secretName });
+  } catch (err: any) {
+    if (err?.name === "ResourceNotFoundException") {
+      console.warn("Calendar secret not found during delete", { secretName });
+      return;
+    }
+    throw err;
   }
 }
 

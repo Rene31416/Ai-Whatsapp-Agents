@@ -14,16 +14,26 @@ type SessionApiResponse =
   | { status: "ok"; session: PortalSession }
   | { status: "unauthenticated" };
 
+type TenantSuccessResponse = {
+  status: "ok";
+  tenantId: string;
+  tenantName: string;
+  calendarTokenSecret: string;
+  users: string[];
+  calendarConnected: boolean;
+  calendarConnectedAt?: string | null;
+};
+
 type TenantApiResponse =
-  | {
-      status: "ok";
-      tenantId: string;
-      tenantName: string;
-      calendarTokenSecret: string;
-      users: string[];
-    }
+  | TenantSuccessResponse
   | { status: "error"; message: string }
   | { status: "not_found"; message: string };
+
+type CalendarAlert = {
+  tone: "success" | "error" | "neutral";
+  title: string;
+  description: string;
+};
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "";
 const GOOGLE_CLIENT_ID = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID ?? "";
@@ -47,8 +57,6 @@ export default function Dashboard() {
     </Suspense>
   );
 }
-
-function DashboardContent() {
   const searchParams = useSearchParams();
   const authStatus = searchParams.get("authStatus");
   const error = searchParams.get("error");
@@ -62,123 +70,118 @@ function DashboardContent() {
   const [tenantStatus, setTenantStatus] = useState<"idle" | "loading" | "ok" | "error">("idle");
   const [tenantError, setTenantError] = useState<string | null>(null);
   const [tenant, setTenant] = useState<TenantApiResponse | null>(null);
+  const [calendarLocalMessage, setCalendarLocalMessage] = useState<CalendarAlert | null>(null);
+  const [isDisconnecting, setIsDisconnecting] = useState(false);
 
-  useEffect(() => {
-    let cancelled = false;
-    const controllers: AbortController[] = [];
+  const refreshTenant = useCallback(
+    async (userEmail: string | undefined) => {
+      if (!userEmail) {
+        setTenantStatus("idle");
+        setTenant(null);
+        return;
+      }
 
-    const loadSession = async () => {
-      setSessionStatus("loading");
-      setSessionError(null);
-      const controller = new AbortController();
-      controllers.push(controller);
+      if (!API_BASE) {
+        setTenantStatus("error");
+        setTenantError("Falta configurar NEXT_PUBLIC_API_BASE para consultar el tenant.");
+        return;
+      }
+
+      setTenantStatus("loading");
+      setTenantError(null);
 
       try {
-        const response = await fetch("/api/session", {
-          credentials: "include",
-          signal: controller.signal,
-        });
+        const tenantResponse = await fetch(
+          `${API_BASE}/tenants/me?email=${encodeURIComponent(userEmail)}`,
+          {
+            method: "GET",
+            headers: {
+              Accept: "application/json",
+            },
+          },
+        );
 
-        if (cancelled) {
-          return;
-        }
+        const tenantPayload = (await tenantResponse.json()) as TenantApiResponse;
 
-        if (!response.ok) {
-          setSessionStatus("error");
-          setSessionError("No encontramos una sesión activa. Inicia sesión nuevamente.");
-          setSession(null);
-          return;
-        }
-
-        const payload = (await response.json()) as SessionApiResponse;
-
-        if (payload.status !== "ok") {
-          setSessionStatus("error");
-          setSessionError("No encontramos una sesión activa. Inicia sesión nuevamente.");
-          setSession(null);
-          return;
-        }
-
-        setSessionStatus("ok");
-        setSession(payload.session);
-
-        const userEmail = payload.session.email;
-        if (userEmail && API_BASE) {
-          setTenantStatus("loading");
-          setTenantError(null);
-          const tenantController = new AbortController();
-          controllers.push(tenantController);
-
-          try {
-            const tenantResponse = await fetch(
-              `${API_BASE}/tenants/me?email=${encodeURIComponent(userEmail)}`,
-              {
-                method: "GET",
-                headers: {
-                  Accept: "application/json",
-                },
-                signal: tenantController.signal,
-              },
-            );
-
-            if (cancelled) {
-              return;
-            }
-
-            const tenantPayload = (await tenantResponse.json()) as TenantApiResponse;
-
-            if (!tenantResponse.ok || tenantPayload.status !== "ok") {
-              setTenantStatus("error");
-              setTenantError(
-                tenantPayload.status === "not_found"
-                  ? "No encontramos un tenant con este correo."
-                  : tenantPayload.status === "error"
-                    ? tenantPayload.message
-                    : "Hubo un problema al recuperar el tenant.",
-              );
-              setTenant(tenantPayload);
-              return;
-            }
-
-            setTenantStatus("ok");
-            setTenant(tenantPayload);
-          } catch (tenantErr: any) {
-            if (cancelled) {
-              return;
-            }
-            console.error("Failed to fetch tenant metadata", tenantErr);
-            setTenantStatus("error");
-            setTenantError("No pudimos recuperar la información del tenant.");
-          }
-        } else if (!API_BASE) {
+        if (!tenantResponse.ok || tenantPayload.status !== "ok") {
           setTenantStatus("error");
-          setTenantError("Falta configurar NEXT_PUBLIC_API_BASE para consultar el tenant.");
-        } else {
-          setTenantStatus("idle");
-        }
-      } catch (sessionErr: any) {
-        if (cancelled) {
+          setTenantError(
+            tenantPayload.status === "not_found"
+              ? "No encontramos un tenant con este correo."
+              : tenantPayload.status === "error"
+                ? tenantPayload.message
+                : "Hubo un problema al recuperar el tenant.",
+          );
+          setTenant(tenantPayload);
           return;
         }
-        console.error("Failed to read session from API", sessionErr);
-        setSessionStatus("error");
-        setSessionError("No pudimos leer la sesión actual.");
-        setSession(null);
+
+        setTenantStatus("ok");
+        setTenant(tenantPayload);
+      } catch (tenantErr: any) {
+        console.error("Failed to fetch tenant metadata", tenantErr);
+        setTenantStatus("error");
+        setTenantError("No pudimos recuperar la información del tenant.");
       }
-    };
+    },
+    [API_BASE],
+  );
 
+  const loadSession = useCallback(async () => {
+    setSessionStatus("loading");
+    setSessionError(null);
+
+    try {
+      const response = await fetch("/api/session", {
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        setSessionStatus("error");
+        setSessionError("No encontramos una sesión activa. Inicia sesión nuevamente.");
+        setSession(null);
+        setTenantStatus("idle");
+        setTenant(null);
+        return;
+      }
+
+      const payload = (await response.json()) as SessionApiResponse;
+
+      if (payload.status !== "ok") {
+        setSessionStatus("error");
+        setSessionError("No encontramos una sesión activa. Inicia sesión nuevamente.");
+        setSession(null);
+        setTenantStatus("idle");
+        setTenant(null);
+        return;
+      }
+
+      setSessionStatus("ok");
+      setSession(payload.session);
+      await refreshTenant(payload.session.email);
+    } catch (sessionErr: any) {
+      console.error("Failed to read session from API", sessionErr);
+      setSessionStatus("error");
+      setSessionError("No pudimos leer la sesión actual.");
+      setSession(null);
+      setTenantStatus("idle");
+      setTenant(null);
+    }
+  }, [refreshTenant]);
+
+  useEffect(() => {
     loadSession();
-
-    return () => {
-      cancelled = true;
-      controllers.forEach((controller) => controller.abort());
-    };
-  }, []);
+  }, [loadSession]);
 
   const tenantOk = tenant && tenant.status === "ok" ? tenant : null;
+  const tenantUsers = tenantOk?.users ?? [];
 
   const googleAuthUrl = useMemo(() => {
-    if (!tenantOk || !GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
+    if (!tenantOk || tenantOk.calendarConnected) {
+      return null;
+    }
+
+    if (!GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI) {
       return null;
     }
 
@@ -204,11 +207,62 @@ function DashboardContent() {
   }, [tenantOk]);
 
   const handleConnectCalendar = useCallback(() => {
+    setCalendarLocalMessage(null);
     if (!googleAuthUrl) {
       return;
     }
     window.location.assign(googleAuthUrl);
   }, [googleAuthUrl]);
+
+  const handleDisconnectCalendar = useCallback(async () => {
+    if (!tenantOk) {
+      return;
+    }
+
+    setCalendarLocalMessage(null);
+    setIsDisconnecting(true);
+
+    try {
+      const response = await fetch("/api/google/disconnect", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ tenantId: tenantOk.tenantId }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        setCalendarLocalMessage({
+          tone: "error",
+          title: "No pudimos desconectar el calendar",
+          description:
+            payload?.message ??
+            "Reintenta otra vez o revisá los permisos de Secrets Manager.",
+        });
+        return;
+      }
+
+      setCalendarLocalMessage({
+        tone: "success",
+        title: "Calendar desconectado",
+        description: "El refresh token fue eliminado. Podés reconectar cuando quieras.",
+      });
+
+      const emailToRefresh = session?.email ?? tenantUsers[0];
+      await refreshTenant(emailToRefresh);
+    } catch (disconnectErr: any) {
+      console.error("Failed to disconnect calendar", disconnectErr);
+      setCalendarLocalMessage({
+        tone: "error",
+        title: "No pudimos desconectar el calendar",
+        description: "Se produjo un error inesperado. Inténtalo nuevamente.",
+      });
+    } finally {
+      setIsDisconnecting(false);
+    }
+  }, [refreshTenant, session?.email, tenantOk, tenantUsers]);
 
   const handleSignOut = useCallback(() => {
     window.location.assign("/api/auth/signout");
@@ -254,15 +308,25 @@ function DashboardContent() {
       description:
         "Autentícate con Cognito para habilitar la conexión a Google Calendar y las métricas.",
     };
-  }, [authStatus, error, session, sessionError, sessionStatus]);
+  }, [error, session, sessionError, sessionStatus]);
 
   const calendarMessage = useMemo(() => {
+    if (calendarLocalMessage) {
+      return calendarLocalMessage;
+    }
     if (calendarStatus === "ok") {
       return {
         tone: "success" as const,
         title: "Calendar conectado",
         description:
           "Guardamos el refresh token en Secrets Manager. Ya podés usarlo en tu workflow cuando esté habilitado.",
+      };
+    }
+    if (calendarStatus === "disconnected") {
+      return {
+        tone: "neutral" as const,
+        title: "Calendar desconectado",
+        description: "El token fue eliminado. Podrás reconectar cuando lo necesites.",
       };
     }
     if (calendarStatus === "error") {
@@ -273,19 +337,27 @@ function DashboardContent() {
       };
     }
     return null;
-  }, [calendarStatus, calendarError]);
+  }, [calendarError, calendarLocalMessage, calendarStatus]);
 
   const tenantDetails = useMemo(() => {
     if (tenantStatus === "loading") {
       return {
         title: "Buscando tu tenant...",
         body: "Estamos consultando la metadata para este usuario.",
+        calendarSecret: null as string | null,
+        users: [] as string[],
+        calendarConnected: false,
+        calendarConnectedAt: null as string | null,
       };
     }
     if (tenantStatus === "error") {
       return {
         title: "No pudimos recuperar el tenant",
         body: tenantError ?? "Revisá que el usuario esté asociado a un tenant en Dynamo.",
+        calendarSecret: null as string | null,
+        users: [] as string[],
+        calendarConnected: false,
+        calendarConnectedAt: null as string | null,
       };
     }
     if (tenantStatus === "ok" && tenantOk) {
@@ -294,6 +366,8 @@ function DashboardContent() {
         body: `Tenant ID: ${tenantOk.tenantId}`,
         calendarSecret: tenantOk.calendarTokenSecret,
         users: tenantOk.users,
+        calendarConnected: tenantOk.calendarConnected,
+        calendarConnectedAt: tenantOk.calendarConnectedAt ?? null,
       };
     }
 
@@ -304,10 +378,21 @@ function DashboardContent() {
     session?.email ?? session?.sub ?? initialUser ?? (authStatus === "ok" ? "Usuario autenticado" : null);
 
   const missingGoogleConfig = !GOOGLE_CLIENT_ID || !GOOGLE_REDIRECT_URI;
-
+  const isCalendarConnected = Boolean(tenantOk?.calendarConnected);
   const canConnectCalendar = Boolean(
-    sessionStatus === "ok" && tenantStatus === "ok" && tenantOk && googleAuthUrl,
+    !isCalendarConnected && sessionStatus === "ok" && tenantStatus === "ok" && tenantOk && googleAuthUrl,
   );
+
+  const formattedCalendarConnectedAt = useMemo(() => {
+    if (!tenantDetails?.calendarConnectedAt) {
+      return null;
+    }
+    const parsed = new Date(tenantDetails.calendarConnectedAt);
+    if (Number.isNaN(parsed.getTime())) {
+      return tenantDetails.calendarConnectedAt;
+    }
+    return parsed.toLocaleString();
+  }, [tenantDetails?.calendarConnectedAt]);
 
   return (
     <main className="portal dashboard">
@@ -359,8 +444,8 @@ function DashboardContent() {
           <strong className="stat-card__value">
             {tenantStatus === "loading"
               ? "..."
-              : tenantStatus === "ok" && tenant && tenant.status === "ok"
-                ? tenant.tenantName
+              : tenantStatus === "ok" && tenantOk
+                ? tenantOk.tenantName
                 : "Sin tenant"}
           </strong>
           <p className="stat-card__hint">
@@ -370,7 +455,7 @@ function DashboardContent() {
         <article className="stat-card">
           <span className="stat-card__label">Estado del calendar</span>
           <strong className="stat-card__value">
-            {tenantDetails?.calendarSecret ? "Configurable" : "Pendiente"}
+            {isCalendarConnected ? "Conectado" : "Pendiente"}
           </strong>
           <p className="stat-card__hint">
             Una vez completes el flujo OAuth guardaremos el refresh token del tenant en Secrets Manager.
@@ -393,40 +478,66 @@ function DashboardContent() {
               <code>{tenantDetails.users.join(", ")}</code>
             </p>
           )}
+          <p>
+            Estado de Google Calendar:{" "}
+            <strong>{tenantDetails.calendarConnected ? "Conectado" : "Sin conectar"}</strong>
+            {tenantDetails.calendarConnected && formattedCalendarConnectedAt && (
+              <> · desde {formattedCalendarConnectedAt}</>
+            )}
+          </p>
         </section>
       )}
 
       <section className="integration-panel">
         <div>
           <h2>Integrar Google Calendar</h2>
-        <p>
-          Este flujo ejecutará el handler `/calendar/callback` en tu API,
-          intercambiará el código por tokens y almacenará el refresh token del
-          tenant.
-        </p>
-        <button className="btn btn-primary" disabled={!canConnectCalendar} onClick={handleConnectCalendar}>
-          Conectar Google Calendar
-        </button>
-        {calendarMessage && (
-          <div className={`integration-alert integration-alert--${calendarMessage.tone}`}>
-            <h4>{calendarMessage.title}</h4>
-            <p>{calendarMessage.description}</p>
-          </div>
-        )}
-        {!canConnectCalendar && tenantStatus === "ok" && sessionStatus === "ok" && missingGoogleConfig && (
-          <div className="integration-alert integration-alert--error">
-            <h4>Falta configuración de Google</h4>
-            <p>
-              Configurá <code>NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> y{" "}
-              <code>NEXT_PUBLIC_GOOGLE_REDIRECT_URI</code> para habilitar el flujo OAuth.
-            </p>
-          </div>
-        )}
-      </div>
+          <p>
+            Este flujo ejecutará el handler <code>/calendar/callback</code> en tu API,
+            intercambiará el código por tokens y almacenará el refresh token del
+            tenant.
+          </p>
+          {!isCalendarConnected && (
+            <button
+              className="btn btn-primary"
+              disabled={!canConnectCalendar}
+              onClick={handleConnectCalendar}
+            >
+              Conectar Google Calendar
+            </button>
+          )}
+          {isCalendarConnected && (
+            <button
+              className="btn btn-outline"
+              onClick={handleDisconnectCalendar}
+              disabled={isDisconnecting}
+            >
+              {isDisconnecting ? "Desconectando..." : "Desconectar Google Calendar"}
+            </button>
+          )}
+          {calendarMessage && (
+            <div className={`integration-alert integration-alert--${calendarMessage.tone}`}>
+              <h4>{calendarMessage.title}</h4>
+              <p>{calendarMessage.description}</p>
+            </div>
+          )}
+          {!canConnectCalendar &&
+            !isCalendarConnected &&
+            tenantStatus === "ok" &&
+            sessionStatus === "ok" &&
+            missingGoogleConfig && (
+              <div className="integration-alert integration-alert--error">
+                <h4>Falta configuración de Google</h4>
+                <p>
+                  Configurá <code>NEXT_PUBLIC_GOOGLE_CLIENT_ID</code> y{" "}
+                  <code>NEXT_PUBLIC_GOOGLE_REDIRECT_URI</code> para habilitar el flujo OAuth.
+                </p>
+              </div>
+            )}
+        </div>
         <div className="integration-panel__meta">
           <h3>Qué haremos a continuación</h3>
           <ul>
-            <li>Agregar secretos en AWS Secrets Manager.</li>
+            <li>Guardar secretos por tenant en AWS Secrets Manager.</li>
             <li>
               Invocar Google OAuth para obtener <code>refresh_token</code>.
             </li>

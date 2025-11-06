@@ -1,11 +1,10 @@
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import {
-  DynamoDBDocumentClient,
-  ScanCommand,
-} from "@aws-sdk/lib-dynamodb";
+import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+import { DynamoDBDocumentClient, ScanCommand } from "@aws-sdk/lib-dynamodb";
 
 const dynamoClient = new DynamoDBClient({});
 const docClient = DynamoDBDocumentClient.from(dynamoClient);
+const secretsClient = new SecretsManagerClient({});
 
 const tenantTableName = process.env.TENANT_TABLE_NAME;
 const tokenSecretPrefix = process.env.CALENDAR_TOKEN_SECRET_PREFIX ?? "";
@@ -48,7 +47,6 @@ export const handler = async (event: any) => {
       ExpressionAttributeValues: {
         ":email": email,
       },
-      ProjectionExpression: "tenantId, tenantName, calendarTokenSecret, users",
     });
 
     const result = await docClient.send(command);
@@ -66,12 +64,48 @@ export const handler = async (event: any) => {
     const tokenSecret =
       tenant.calendarTokenSecret ?? `${tokenSecretPrefix}${tenantId}`;
 
+    let calendarConnected = false;
+    let calendarConnectedAt: string | null = null;
+
+    if (tokenSecret && tokenSecret.trim().length > 0) {
+      try {
+        const secretValue = await secretsClient.send(
+          new GetSecretValueCommand({
+            SecretId: tokenSecret,
+          })
+        );
+
+        if (secretValue.SecretString) {
+          try {
+            const payload = JSON.parse(secretValue.SecretString) as Record<string, unknown>;
+            if (payload && typeof payload === "object") {
+              calendarConnected = Boolean((payload as { refresh_token?: string }).refresh_token);
+              const receivedAt = (payload as { receivedAt?: string }).receivedAt;
+              if (typeof receivedAt === "string" && receivedAt.trim().length > 0) {
+                calendarConnectedAt = receivedAt;
+              }
+            }
+          } catch (parseErr) {
+            console.error("Failed to parse calendar secret payload", parseErr);
+          }
+        }
+      } catch (err: any) {
+        if (err?.name === "ResourceNotFoundException") {
+          calendarConnected = false;
+        } else {
+          console.error("Unable to read calendar secret metadata", err);
+        }
+      }
+    }
+
     return jsonResponse(200, {
       status: "ok",
       tenantId,
       tenantName: tenant.tenantName ?? tenantId,
       calendarTokenSecret: tokenSecret,
       users: tenant.users ?? [],
+      calendarConnected,
+      calendarConnectedAt,
     });
   } catch (err: any) {
     console.error("Error querying tenant metadata:", err);
