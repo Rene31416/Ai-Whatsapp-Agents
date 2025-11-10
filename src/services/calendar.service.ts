@@ -33,6 +33,7 @@ export type CreateAppointmentParams = {
   attendees?: Array<{ email: string; displayName?: string }>;
   calendarId?: string;
   doctor: string;
+  
 };
 
 export type CancelAppointmentParams = {
@@ -41,6 +42,7 @@ export type CancelAppointmentParams = {
   calendarId?: string;
 };
 
+
 export type RescheduleAppointmentParams = {
   tenantId: string;
   eventId: string;
@@ -48,6 +50,7 @@ export type RescheduleAppointmentParams = {
   endIso: string;
   calendarId?: string;
 };
+
 
 const DEFAULT_CALENDAR_ID = "primary";
 
