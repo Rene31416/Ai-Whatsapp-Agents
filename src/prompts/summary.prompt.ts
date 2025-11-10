@@ -21,6 +21,7 @@ function extractAnyText(msg: any): string {
   try { return JSON.stringify(msg); } catch { return String(msg ?? ""); }
 }
 
+
 function startTimer(label: string) {
   const t0 = process.hrtime.bigint();
   return () => {
