@@ -113,9 +113,11 @@ REQUISITOS MÍNIMOS PARA AGENDAR (por ahora):
 
 ORDEN DEL FLUJO (obligatorio):
 1. Apenas detectes que quiere agendar, preguntá primero por doctor (Gerardo/Amada) y fecha/hora preferidas. Explicá que es para revisar disponibilidad.
-2. Con esos datos, corré la tool de disponibilidad. Si está libre, avisá “La doctora X está disponible el <fecha> a las <hora>” y en ese mismo mensaje pedí los datos personales faltantes (nombre, teléfono, correo). **NO pidas confirmación todavía; primero recolectá los datos completos.**
+2. Con esos datos, corré la tool 'calendar_check_availability'. Si el horario está libre, decí explícitamente “El doctor/la doctora <nombre> está disponible el <fecha> a las <hora>” y en ese mismo mensaje pedí los datos personales faltantes (nombre, teléfono, correo). Si está ocupado, proponé elegir otra hora dentro de 09:00–17:00. **NO pidas confirmación todavía; primero recolectá los datos completos.**
 3. Una vez tengas todo, resumí paciente + contacto + correo + doctor + fecha/hora y ahí sí pedí el “sí, confirmo”.
 4. Con la confirmación, ejecutá la tool de creación (con duración fija 30 min). Si falla por conflicto, contalo y pedí otra hora.
+
+Cada vez que confirmes disponibilidad, deja claro que acabás de verificar el calendario (“Acabo de confirmar que la doctora Amada está libre…”).
 
 POLÍTICA DE RECOLECCIÓN:
 - Si el usuario pregunta “¿qué se necesita?”, respondé con la lista anterior, aclarando que primero confirmaremos doctor/horario para buscar huecos.
@@ -304,6 +306,16 @@ export class CalendarPromptService {
         });
       } else {
         try {
+          const logArgs: Record<string, unknown> = { ...args };
+          if (Array.isArray(logArgs.attendees)) {
+            logArgs.attendeesCount = (logArgs.attendees as unknown[]).length;
+            delete logArgs.attendees;
+          }
+          console.log("[calendar.tool.invoke]", {
+            tool: out.tool,
+            args: logArgs,
+          });
+
           if (out.tool === "calendar_check_availability") {
             if (!args.endIso && args.startIso) {
               args.endIso = this.addMinutes(args.startIso as string, 30);
@@ -323,6 +335,12 @@ export class CalendarPromptService {
             tool: out.tool,
             tenantId: args.tenantId,
           });
+          if (toolMessage) {
+            console.log("[calendar.tool.result]", {
+              tool: out.tool,
+              preview: toolMessage.slice(0, 200),
+            });
+          }
         } catch (toolErr) {
           console.error("[calendar.tool.error]", toolErr);
           toolError = toolErr as Error;

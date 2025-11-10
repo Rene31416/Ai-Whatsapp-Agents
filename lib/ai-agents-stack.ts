@@ -25,6 +25,10 @@ export class AiAgentsStack extends cdk.Stack {
       secretName: "GeminiApiKey",
       encryptionKey: dataKey,
     });
+    const openAiSecret = new secretsmanager.Secret(this, "OpenAIApiKeySecret", {
+      secretName: "OpenAIApiKey",
+      encryptionKey: dataKey,
+    });
     const whatsAppSecretArn = `arn:aws:secretsmanager:${cdk.Aws.REGION}:${cdk.Aws.ACCOUNT_ID}:secret:WhatsappCredentials-`;
     const calendarTokenSecretPrefix =
       (this.node.tryGetContext("calendarTokenSecretPrefix") as string | undefined) ??
@@ -89,10 +93,16 @@ export class AiAgentsStack extends cdk.Stack {
       retentionPeriod: cdk.Duration.days(14),
     });
 
+    const chatIngressFifoDlq = new sqs.Queue(this, "ChatIngressFifoDLQ", {
+      retentionPeriod: cdk.Duration.days(14),
+      fifo: true,
+    });
+
     const chatIngressQueue = new sqs.Queue(this, "ChatIngressQueue", {
       visibilityTimeout: cdk.Duration.seconds(120),
+      fifo: true,
       deadLetterQueue: {
-        queue: chatIngressDlq,
+        queue: chatIngressFifoDlq,
         maxReceiveCount: 1,
       },
     });
@@ -145,7 +155,7 @@ export class AiAgentsStack extends cdk.Stack {
       })
     );
 
-    // 🧩 Aggregator Lambda (buffers + emits "flush ticket" with delay)
+    // 🧩 Aggregator Lambda (legacy buffer path — temporarily disabled)
     const aggregatorLambda = new lambda.Function(this, "AggregatorLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
@@ -164,13 +174,14 @@ export class AiAgentsStack extends cdk.Stack {
     aggregatorLambda.addEventSourceMapping("IngressQueueMapping", {
       eventSourceArn: chatIngressQueue.queueArn,
       batchSize: 10,
+      enabled: false,
     });
     chatIngressQueue.grantConsumeMessages(aggregatorLambda);
     chatBufferTable.grantReadWriteData(aggregatorLambda);
     dataKey.grantEncryptDecrypt(aggregatorLambda);
     flushTicketQueue.grantSendMessages(aggregatorLambda);
 
-    // 🧠 Flush Lambda (triggered by FlushTicketQueue)
+    // 🧠 Flush Lambda (legacy buffer path — currently idle)
     const flushLambda = new lambda.Function(this, "FlushLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
@@ -187,6 +198,7 @@ export class AiAgentsStack extends cdk.Stack {
     flushLambda.addEventSource(
       new SqsEventSource(flushTicketQueue, {
         batchSize: 1,
+        enabled: false,
       })
     );
 
@@ -194,7 +206,7 @@ export class AiAgentsStack extends cdk.Stack {
     flushOutputQueue.grantSendMessages(flushLambda);
     dataKey.grantEncryptDecrypt(flushLambda);
 
-    // 🤖 ChatService Lambda (consumes FlushOutputQueue)
+    // 🤖 ChatService Lambda (consumes FIFO ingress queue)
     const chatServiceLambda = new lambda.Function(this, "ChatServiceLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
@@ -213,6 +225,7 @@ export class AiAgentsStack extends cdk.Stack {
         MEMORY_TABLE_NAME: memoryTable.tableName,
         GOOGLE_OAUTH_SECRET_ARN: googleOAuthSecret.secretArn,
         CALENDAR_TOKEN_SECRET_PREFIX: calendarTokenSecretPrefix,
+        OPENAI_SECRET_ARN: openAiSecret.secretArn,
       },
     });
 
@@ -223,6 +236,7 @@ export class AiAgentsStack extends cdk.Stack {
     memoryTable.grantReadWriteData(chatServiceLambda);
 
     geminiSecret.grantRead(chatServiceLambda);
+    openAiSecret.grantRead(chatServiceLambda);
     googleOAuthSecret.grantRead(chatServiceLambda);
     dataKey.grantEncryptDecrypt(chatServiceLambda);
 
@@ -241,8 +255,16 @@ export class AiAgentsStack extends cdk.Stack {
     );
 
     chatServiceLambda.addEventSource(
+      new SqsEventSource(chatIngressQueue, {
+        batchSize: 1,
+      })
+    );
+
+    // Legacy buffer consumer mapping (disabled but kept for quick rollback)
+    chatServiceLambda.addEventSource(
       new SqsEventSource(flushOutputQueue, {
         batchSize: 1,
+        enabled: false,
       })
     );
 

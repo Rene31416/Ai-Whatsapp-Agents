@@ -5,20 +5,21 @@ import {
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
 
-let cachedKey: string | null = null;
+let cachedGeminiKey: string | null = null;
+let cachedOpenAIKey: string | null = null;
 let llmInstance: any = null;
 
 /** Resolve Google API key either from ENV (GOOGLE_API_KEY) or Secrets Manager (GEMINI_SECRET_ARN). */
-async function getApiKey(): Promise<string> {
-  if (cachedKey !== null) return cachedKey;
+async function getGeminiApiKey(): Promise<string> {
+  if (cachedGeminiKey !== null) return cachedGeminiKey;
 
   if (!process.env.GEMINI_SECRET_ARN) {
     const localKey = process.env.GOOGLE_API_KEY;
     if (!localKey) {
       throw new Error("Missing both GEMINI_SECRET_ARN and GOOGLE_API_KEY. Set one of them.");
     }
-    cachedKey = localKey;
-    return cachedKey;
+    cachedGeminiKey = localKey;
+    return cachedGeminiKey;
   }
 
   const client = new SecretsManagerClient({});
@@ -28,9 +29,36 @@ async function getApiKey(): Promise<string> {
   if (!response.SecretString) throw new Error("Empty secret value from Secrets Manager");
 
   const secret = JSON.parse(response.SecretString);
-  cachedKey = secret.GOOGLE_API_KEY;
-  if (!cachedKey) throw new Error("GOOGLE_API_KEY missing in secret JSON");
-  return cachedKey;
+  cachedGeminiKey = secret.GOOGLE_API_KEY;
+  if (!cachedGeminiKey) throw new Error("GOOGLE_API_KEY missing in secret JSON");
+  return cachedGeminiKey;
+}
+
+/** Resolve OpenAI key from Secret if present, else fallback to env var. */
+async function getOpenAIApiKey(): Promise<string> {
+  if (cachedOpenAIKey) return cachedOpenAIKey;
+  const secretArn = process.env.OPENAI_SECRET_ARN;
+  if (secretArn) {
+    const client = new SecretsManagerClient({});
+    const response = await client.send(
+      new GetSecretValueCommand({ SecretId: secretArn })
+    );
+    if (!response.SecretString)
+      throw new Error("Empty OpenAI secret value from Secrets Manager");
+    const secret = JSON.parse(response.SecretString);
+    cachedOpenAIKey = secret.OPENAI_API_KEY;
+    if (!cachedOpenAIKey)
+      throw new Error("OPENAI_API_KEY missing in OpenAI secret JSON");
+    return cachedOpenAIKey;
+  }
+  const envKey = process.env.OPENAI_API_KEY;
+  if (!envKey) {
+    throw new Error(
+      "OPENAI_API_KEY or OPENAI_SECRET_ARN is required when LLM_PROVIDER=openai"
+    );
+  }
+  cachedOpenAIKey = envKey;
+  return cachedOpenAIKey;
 }
 
 /**
@@ -52,8 +80,7 @@ export async function getLLM(): Promise<any> {
         "LLM_PROVIDER=openai pero no se pudo cargar '@langchain/openai'. Añade la dependencia o ajusta la configuración."
       );
     }
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) throw new Error("OPENAI_API_KEY is required when LLM_PROVIDER=openai");
+    const apiKey = await getOpenAIApiKey();
     llmInstance = new ChatOpenAICtor({
       model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
       apiKey,
@@ -62,7 +89,7 @@ export async function getLLM(): Promise<any> {
     (llmInstance as any).__provider = "openai";
     return llmInstance as any;
   }
-  const apiKey = await getApiKey();
+  const apiKey = await getGeminiApiKey();
   llmInstance = new ChatGoogleGenerativeAI({
     model: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite",
     apiKey,

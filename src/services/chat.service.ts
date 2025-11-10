@@ -25,6 +25,12 @@ type ChatJob = {
   flushedAt?: string;
   messageId: string;
   userKey: string;
+  whatsappMeta?: {
+    timestamp?: string;
+    type?: string;
+    profileName?: string;
+    phoneNumberId?: string;
+  };
 };
 
 type Windows = {
@@ -57,6 +63,15 @@ export class ChatService {
       userId: job.userId,
       messageId: job.messageId,
     });
+
+    if (job.whatsappMeta) {
+      this.log.info("chat.whatsapp.meta", {
+        timestamp: job.whatsappMeta.timestamp,
+        type: job.whatsappMeta.type,
+        profileName: job.whatsappMeta.profileName,
+        phoneNumberId: job.whatsappMeta.phoneNumberId,
+      });
+    }
 
     this.log.info("chat.handle.start");
 
@@ -154,8 +169,9 @@ export class ChatService {
       flushedAt: body.flushedAt,
       messageId: record.messageId,
       userKey: `${tenantId}#${userId}`,
+      whatsappMeta: body.whatsappMeta,
     };
-    }
+  }
 
   private async persistUser(job: ChatJob): Promise<void> {
     await this.chatRepository.saveMessage(

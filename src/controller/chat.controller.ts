@@ -61,21 +61,39 @@ export class WhatsappController extends Controller {
       if (!messageId) return { status: "ok", ignored: "missing_message_id" };
       if (!text) return { status: "ok", ignored: "empty_text" };
 
+      const nowIso = new Date().toISOString();
       const payload = {
-        tenantId: phoneNumberId, // ✅ so aggregator/ChatService can use this
-        phoneNumberId, // keep original for clarity
-        userId: from, // ✅ standardize field name
-        text,
+        tenantId: phoneNumberId,
+        userId: from,
+        combinedText: text,
+        messageCount: 1,
+        version: 1,
+        flushedAt: nowIso,
         messageId,
-        timestamp: Date.now(),
+        whatsappMeta: {
+          timestamp: msg.timestamp ?? value?.timestamp,
+          type: msg.type,
+          profileName: value?.contacts?.[0]?.profile?.name,
+          phoneNumberId,
+        },
       };
 
-      // ✅ Send to SQS (ChatIngressQueue)
+      // Log payload preview for future metadata tweaks
+      console.log("📦 FIFO payload preview:", {
+        tenantId: payload.tenantId,
+        userId: payload.userId,
+        messageId: payload.messageId,
+        whatsappMeta: payload.whatsappMeta,
+      });
+
+      // ✅ Send to FIFO SQS (ChatIngressQueue.fifo)
       const queueUrl = process.env.CHAT_INGRESS_QUEUE_URL!;
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: queueUrl,
           MessageBody: JSON.stringify(payload),
+          MessageGroupId: `${payload.tenantId}#${payload.userId}`,
+          MessageDeduplicationId: messageId,
         })
       );
 

@@ -1,3 +1,4 @@
+// NOTE: Legacy flush handler. Left for reference but disabled in FIFO mode.
 import {
   DynamoDBClient,
   GetItemCommand,

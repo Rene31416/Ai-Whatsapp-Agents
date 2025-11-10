@@ -1,3 +1,4 @@
+// NOTE: Legacy buffer handler. Left in place for potential rollback but not used in FIFO mode.
 import { DynamoDBClient, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 
