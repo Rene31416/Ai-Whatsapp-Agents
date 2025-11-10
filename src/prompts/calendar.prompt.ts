@@ -8,6 +8,7 @@ import { getLLM } from "../services/llm.services";
 import { CalendarService, CalendarEventConflictError } from "../services/calendar.service";
 import { createCalendarTools } from "./calendar.tools";
 
+
 /**
  * Mantiene el mismo “shape” conceptual que decideAndAnswerLite:
  * - función pública: calendarAndAnswerLite(input) -> { a, c }
