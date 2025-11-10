@@ -6,3 +6,4 @@ export async function mainPrompt(input: {
   now_human: string;
   tz: string;
 }) {}
+
