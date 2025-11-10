@@ -8,6 +8,7 @@ import { JsonOutputParser } from "@langchain/core/output_parsers";
 // AND we surface the scheduling metadata so we can branch later.
 export const DecisionLiteSchema = z.object({
   final_answer: z.string().max(400, "final_answer excede 400 chars"),
+  
 
   identify_intent: z.boolean(), // <- maps from ii (did user give contact info?)
   confidence: z.number().min(0).max(1), // <- maps from c
