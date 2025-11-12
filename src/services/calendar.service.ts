@@ -3,6 +3,7 @@ import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-sec
 import { google, calendar_v3 } from "googleapis";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { randomBytes } from "node:crypto";
+import { TenantRepository } from "./tenant.repository";
 
 type OAuthSecret = {
   clientId?: string;
@@ -65,7 +66,10 @@ export class CalendarEventConflictError extends Error {
 export class CalendarService {
   private readonly secretsClient = new SecretsManagerClient({});
 
-  constructor(@inject(Logger) private readonly log: Logger) {}
+  constructor(
+    @inject(Logger) private readonly log: Logger,
+    @inject(TenantRepository) private readonly tenants: TenantRepository
+  ) {}
 
   async checkAvailability(params: AvailabilityParams) {
     const client = await this.getAuthorizedClient(params.tenantId);
@@ -250,11 +254,12 @@ export class CalendarService {
     }
 
     const prefix = process.env.CALENDAR_TOKEN_SECRET_PREFIX;
-    if (!prefix) {
-      throw new Error("CALENDAR_TOKEN_SECRET_PREFIX env is required");
+    const tenant = await this.tenants.getById(tenantId);
+    if (!tenant?.calendarSecretName) {
+      throw new Error(`Tenant ${tenantId} missing calendarSecretName`);
     }
 
-    const secretId = `${prefix}${tenantId}`;
+    const secretId = this.resolveSecretId(tenant.calendarSecretName, prefix);
     const response = await this.secretsClient.send(
       new GetSecretValueCommand({ SecretId: secretId })
     );
@@ -305,5 +310,18 @@ export class CalendarService {
       clientSecret: parsed.clientSecret,
       redirectUri: parsed.redirectUri,
     };
+  }
+
+  private resolveSecretId(secretName: string, prefix?: string): string {
+    if (secretName.startsWith("arn:aws:secretsmanager")) {
+      return secretName;
+    }
+    if (!prefix) {
+      return secretName;
+    }
+    const normalizedPrefix = prefix.endsWith(":secret:")
+      ? prefix
+      : prefix.replace(/[^:]+$/, "");
+    return `${normalizedPrefix}${secretName}`;
   }
 }
