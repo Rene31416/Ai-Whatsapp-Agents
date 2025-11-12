@@ -1,118 +1,183 @@
 import { z } from "zod";
 import { DynamicStructuredTool } from "langchain/tools";
-import type {
-  CalendarService,
-  AvailabilityParams,
-  CreateAppointmentParams,
-  CancelAppointmentParams,
-  RescheduleAppointmentParams,
-} from "../services/calendar.service";
 
-export function createCalendarTools(calendarService: CalendarService) {
+export type AppointmentsToolConfig = {
+  baseUrl: string;
+};
+
+export class AppointmentsToolError extends Error {
+  constructor(public statusCode: number, message: string) {
+    super(message);
+    this.name = "AppointmentsToolError";
+  }
+}
+
+export function createCalendarTools(config: AppointmentsToolConfig) {
+  if (!config?.baseUrl) {
+    throw new Error("Appointments base URL is required to initialize tools");
+  }
+
+  const baseUrl = config.baseUrl.replace(/\/$/, "");
+
+  const requestJson = async (method: string, url: string, body?: unknown) => {
+    const init: RequestInit = {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+      },
+    };
+
+    if (method === "GET") {
+      delete (init.headers as Record<string, string>)["Content-Type"];
+    } else if (body !== undefined) {
+      init.body = JSON.stringify(body);
+    }
+
+    const response = await fetch(url, init);
+    const text = await response.text();
+
+    if (!response.ok) {
+      throw new AppointmentsToolError(response.status, text || `Appointments API ${response.status}`);
+    }
+
+    if (!text) return {};
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { raw: text };
+    }
+  };
+
+  const addMinutes = (startIso: string, minutes: number) => {
+    const start = new Date(startIso);
+    if (Number.isNaN(start.getTime())) return startIso;
+    const end = new Date(start.getTime() + minutes * 60 * 1000);
+    return end.toISOString();
+  };
+
+  const stripDate = (iso: string) => {
+    if (!iso) return "";
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso.slice(0, 10);
+    return date.toISOString().slice(0, 10);
+  };
+
+  const overlap = (aStart: string, aEnd: string, bStart: string, bEnd: string) => {
+    const startA = new Date(aStart).getTime();
+    const endA = new Date(aEnd).getTime();
+    const startB = new Date(bStart).getTime();
+    const endB = new Date(bEnd).getTime();
+    if ([startA, endA, startB, endB].some((v) => Number.isNaN(v))) return false;
+    return Math.max(startA, startB) < Math.min(endA, endB);
+  };
+
   const checkAvailability = new DynamicStructuredTool({
-    name: "calendar_check_availability",
+    name: "appointments_check_availability",
     description:
-      "Verifica si un horario específico está libre en Google Calendar para el tenant dado.",
+      "Verifica si el horario deseado está libre según los registros de la clínica (DynamoDB).",
     schema: z.object({
-      tenantId: z.string().describe("Identificador del tenant"),
-      startIso: z.string().describe("Inicio del bloque en ISO 8601"),
-      endIso: z.string().describe("Fin del bloque en ISO 8601"),
-      calendarId: z
-        .string()
-        .optional()
-        .describe("ID opcional del calendario; por defecto se usa 'primary'"),
+      tenantId: z.string(),
+      doctorId: z.string(),
+      startIso: z.string(),
+      endIso: z.string().optional(),
     }),
     func: async (input) => {
-      const { tenantId, startIso, endIso, calendarId } = input as AvailabilityParams;
-      const { isFree, busy } = await calendarService.checkAvailability({
-        tenantId,
-        startIso,
-        endIso,
-        calendarId,
-      });
+      const { tenantId, doctorId, startIso } = input as {
+        tenantId: string;
+        doctorId: string;
+        startIso: string;
+        endIso?: string;
+      };
+
+      const start = typeof startIso === "string" ? startIso : new Date().toISOString();
+      const endIso = (input as any)?.endIso ?? addMinutes(start, 30);
+      const url = new URL(`${baseUrl}/availability`);
+      url.searchParams.set("tenantId", tenantId);
+      url.searchParams.set("doctorId", doctorId);
+      url.searchParams.set("date", stripDate(start));
+
+      const data = (await requestJson("GET", url.toString())) as any;
+      const busy = Array.isArray(data?.busy) ? data.busy : [];
+      const isFree = !busy.some((slot: any) =>
+        overlap(start, endIso, slot?.startIso ?? slot?.start, slot?.endIso ?? slot?.end)
+      );
+
       return JSON.stringify({ isFree, busy });
     },
   });
 
   const createAppointment = new DynamicStructuredTool({
-    name: "calendar_create_appointment",
+    name: "appointments_create",
     description:
-      "Crea un evento en Google Calendar para el tenant especificado. Debe usarse cuando el usuario confirmó hora y doctor.",
+      "Crea una cita en el sistema interno de la clínica. Úsalo solo después de que el paciente confirmó doctor/horario y ya entregó sus datos.",
     schema: z.object({
       tenantId: z.string(),
-      summary: z.string().describe("Título del evento"),
-      description: z.string().optional().describe("Descripción opcional"),
+      userId: z.string(),
+      patientName: z.string(),
+      patientPhone: z.string().optional(),
+      patientEmail: z.string().optional(),
+      doctorId: z.string(),
+      doctorName: z.string().optional(),
       startIso: z.string(),
       endIso: z.string(),
-      attendees: z
-        .array(
-          z.object({
-            email: z.string(),
-            displayName: z.string().optional(),
-          })
-        )
-        .optional(),
-      calendarId: z.string().optional(),
-      doctor: z
-        .string()
-        .describe("Nombre del doctor con quien se agenda la cita (ej. Gerardo o Amada)"),
+      durationMinutes: z.number().optional(),
+      source: z.string().optional(),
+      notes: z.string().optional(),
     }),
     func: async (input) => {
-      const { tenantId, summary, description, startIso, endIso, attendees, calendarId, doctor } =
-        input as CreateAppointmentParams;
-      const event = await calendarService.createAppointment({
-        tenantId,
-        summary,
-        description,
-        startIso,
-        endIso,
-        attendees,
-        calendarId,
-        doctor,
-      });
-      return JSON.stringify({ eventId: event.id, status: event.status, htmlLink: event.htmlLink });
-    },
-  });
-
-  const cancelAppointment = new DynamicStructuredTool({
-    name: "calendar_cancel_appointment",
-    description: "Cancela un evento existente en Google Calendar usando su ID.",
-    schema: z.object({
-      tenantId: z.string(),
-      eventId: z.string(),
-      calendarId: z.string().optional(),
-    }),
-    func: async (input) => {
-      const { tenantId, eventId, calendarId } = input as CancelAppointmentParams;
-      await calendarService.cancelAppointment({ tenantId, eventId, calendarId });
-      return JSON.stringify({ cancelled: true });
+      const payload = input as Record<string, unknown>;
+      const data = await requestJson("POST", baseUrl, payload);
+      return JSON.stringify(data);
     },
   });
 
   const rescheduleAppointment = new DynamicStructuredTool({
-    name: "calendar_reschedule_appointment",
+    name: "appointments_reschedule",
     description:
-      "Reagenda un evento existente moviéndolo a un nuevo horario. Se debe llamar cuando el usuario pide cambiar fecha u hora.",
+      "Reagenda una cita existente moviéndola al nuevo horario confirmado.",
     schema: z.object({
       tenantId: z.string(),
-      eventId: z.string(),
-      startIso: z.string(),
-      endIso: z.string(),
-      calendarId: z.string().optional(),
+      appointmentId: z.string().optional(),
+      userId: z.string().optional(),
+      doctorId: z.string().optional(),
+      startIso: z.string().optional(),
+      newStartIso: z.string(),
+      newEndIso: z.string().optional(),
+      durationMinutes: z.number().optional(),
+      newDoctorId: z.string().optional(),
+      newDoctorName: z.string().optional(),
+      notes: z.string().optional(),
     }),
     func: async (input) => {
-      const { tenantId, eventId, startIso, endIso, calendarId } =
-        input as RescheduleAppointmentParams;
-      const event = await calendarService.rescheduleAppointment({
-        tenantId,
-        eventId,
-        startIso,
-        endIso,
-        calendarId,
-      });
-      return JSON.stringify({ eventId: event.id, status: event.status });
+      const payload = input as Record<string, unknown>;
+      const target = payload.appointmentId
+        ? `${baseUrl}/${encodeURIComponent(String(payload.appointmentId))}`
+        : baseUrl;
+      const data = await requestJson("PATCH", target, payload);
+      return JSON.stringify(data);
     },
   });
 
-  return [checkAvailability, createAppointment, cancelAppointment, rescheduleAppointment];
+  const cancelAppointment = new DynamicStructuredTool({
+    name: "appointments_cancel",
+    description:
+      "Cancela una cita en el sistema interno. Úsalo solo si el paciente lo pidió explícitamente.",
+    schema: z.object({
+      tenantId: z.string(),
+      appointmentId: z.string().optional(),
+      userId: z.string().optional(),
+      doctorId: z.string().optional(),
+      startIso: z.string().optional(),
+    }),
+    func: async (input) => {
+      const payload = input as Record<string, unknown>;
+      const target = payload.appointmentId
+        ? `${baseUrl}/${encodeURIComponent(String(payload.appointmentId))}`
+        : baseUrl;
+      const data = await requestJson("DELETE", target, payload);
+      return JSON.stringify(data);
+    },
+  });
+
+  return [checkAvailability, createAppointment, rescheduleAppointment, cancelAppointment];
 }
