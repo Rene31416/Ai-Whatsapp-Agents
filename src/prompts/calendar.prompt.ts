@@ -1,12 +1,12 @@
 // srrc/calendar/calendar.prompt.service.ts
-import { inject, injectable } from "inversify";
+import { injectable } from "inversify";
 import { PromptTemplate } from "@langchain/core/prompts";
 import { JsonOutputParser } from "@langchain/core/output_parsers";
 import { DynamicStructuredTool } from "langchain/tools";
 import { z } from "zod";
 import { getLLM } from "../services/llm.services";
-import { CalendarService, CalendarEventConflictError } from "../services/calendar.service";
-import { createCalendarTools } from "./calendar.tools";
+import { AppointmentsToolError, createCalendarTools } from "./calendar.tools";
+import { analyzeCalendarConversation, buildPolicySummary } from "./calendar.policy";
 
 
 /**
@@ -28,14 +28,22 @@ export type CalendarLiteInput = {
 export type CalendarLiteOutput = {
   a: string; // respuesta breve para WhatsApp
   c: number; // confianza 0..1
-  tool?: string;
+  tool?: ToolName;
   args?: Record<string, unknown>;
 };
+
+const TOOL_NAMES = [
+  "appointments_check_availability",
+  "appointments_create",
+  "appointments_reschedule",
+  "appointments_cancel",
+] as const;
+type ToolName = (typeof TOOL_NAMES)[number];
 
 const CalendarLiteSchema = z.object({
   a: z.string().default(""),
   c: z.number().min(0).max(1).default(0.7),
-  tool: z.string().optional(),
+  tool: z.enum(TOOL_NAMES).optional(),
   args: z.record(z.string(), z.any()).optional(),
 });
 
@@ -89,78 +97,53 @@ function ms(from: bigint, to: bigint) {
 // -------------------- Prompt (sin fences, JSON estricto) --------------------
 // ---------- CALENDAR PROMPT ----------
 const template = `
-Eres un agente de CALENDARIO. Respondé en español, estilo WhatsApp, breve y natural (máx 2 frases, 2–3 emojis).
-No menciones herramientas ni procesos internos.
+Eres un agente de CALENDARIO. Respondé en español, estilo WhatsApp, breve y natural (máx 2 frases, 2–3 emojis). No menciones herramientas.
 
-ESTILO / SALUDOS (como el asistente principal):
-- Saluda solo si VENTANA está vacía o el MSG actual es un saludo simple; si no, ve directo al punto.
-- No te autopresentes salvo en el primer turno; evitá iniciar con “hola/buenos días/tardes/noches” si ya estás en conversación.
-- Variá los saludos breves (ej.: “¡Hola!”, “¡Buenas!”, “¡Qué gusto leerte!”) y no repitas exactamente el mismo si el agente ya lo usó en la VENTANA.
-- Mantené 1–2 frases cálidas y concretas, con 2–3 emojis máximo en toda la respuesta.
-- Recordá mencionar, cuando corresponda, que los horarios disponibles son de 09:00 a 17:00.
+ESTILO / SALUDOS:
+- Solo saluda si VENTANA está vacía o el mensaje actual es un saludo simple.
+- No te autopresentes si ya hubo conversación reciente.
+- Variá saludos breves y evita repetirlos.
+- Recordá que el horario válido es 09:00–17:00.
+
+POLÍTICAS CALCULADAS (JSON):
+{policy_summary}
+
+Lee el JSON y actúa según esos flags:
+- Si doctorKnown=false → pedí doctor (Gerardo o Amada).
+- Si doctorKnown=true pero el mensaje trae un doctor distinto al anterior, asumilo y repetilo de forma clara (ej.: “Perfecto, la agendo con la doctora Amada…”).
+- Si hasDateTimeInfo=false → pedí fecha/hora explícita (24h o am/pm) y explica que dura 30 min.
+- Si clinicHoursOk=false → indicá que debe ser entre 09:00–17:00 y pedí otra hora.
+- Si needsAvailabilityCheck=true → avisá que revisarás disponibilidad y usa la tool appointments_check_availability antes de afirmar resultados.
+- Cuando availabilityStatus="free" → indicá que acabás de confirmar el horario y pedí los datos faltantes (sin pedir confirmación todavía).
+- Cuando availabilityStatus="busy" → explicá que no hay cupo y pedí que elija otro horario dentro de 09:00–17:00 (no repitas el rango completo más de una vez).
+- Si needsContactData=true → pedí en un solo mensaje exactamente los campos listados en missingFields (nombre, telefono, correo) sin repetir otros.
+- Si needsConfirmation=true → resume paciente + teléfono + correo + doctor + fecha/hora y pedí el “sí, confirmo” antes de crear la cita.
+- Después de appointments_create → confirma que quedó agendada mencionando los datos completos. No prometas moverla automáticamente; sólo indica que quedó registrada.
 
 OBJETIVO:
-- Guiar al usuario para agendar/gestionar citas y RECOLECTAR los datos mínimos cuando falten.
-- Usá EXCLUSIVAMENTE VENTANA y el MSG ACTUAL para detectar si ya dio datos (no repitas).
-- Todas las citas duran 30 minutos exactos y deben ocurrir entre 09:00 y 17:00 hora de la clínica.
-
-REQUISITOS MÍNIMOS PARA AGENDAR (por ahora):
-- Nombre completo
-- Número de contacto
-- Correo electrónico
-- Doctor preferido: "Gerardo" o "Amada" (¡ojo: es Amada, no Amanda!)
-- Fecha y hora preferidas (dentro del horario 09:00–17:00 de la clínica)
-
-ORDEN DEL FLUJO (obligatorio):
-1. Apenas detectes que quiere agendar, preguntá primero por doctor (Gerardo/Amada) y fecha/hora preferidas. Explicá que es para revisar disponibilidad.
-2. Con esos datos, corré la tool 'calendar_check_availability'. Si el horario está libre, decí explícitamente “El doctor/la doctora <nombre> está disponible el <fecha> a las <hora>” y en ese mismo mensaje pedí los datos personales faltantes (nombre, teléfono, correo). Si está ocupado, proponé elegir otra hora dentro de 09:00–17:00. **NO pidas confirmación todavía; primero recolectá los datos completos.**
-3. Una vez tengas todo, resumí paciente + contacto + correo + doctor + fecha/hora y ahí sí pedí el “sí, confirmo”.
-4. Con la confirmación, ejecutá la tool de creación (con duración fija 30 min). Si falla por conflicto, contalo y pedí otra hora.
-
-Cada vez que confirmes disponibilidad, deja claro que acabás de verificar el calendario (“Acabo de confirmar que la doctora Amada está libre…”).
+- Guiar al usuario para agendar/gestionar citas usando la información disponible en VENTANA + MSG.
+- Evitá pedir datos que ya figuran en la conversación.
 
 POLÍTICA DE RECOLECCIÓN:
-- Si el usuario pregunta “¿qué se necesita?”, respondé con la lista anterior, aclarando que primero confirmaremos doctor/horario para buscar huecos.
-- Si faltan varios datos personales tras la disponibilidad, pedilos en UN solo mensaje, enumerando cada campo (“Necesito: 1) Nombre completo, 2) Número de contacto, 3) Correo electrónico”) y manteniendo 2–3 emojis en total. No vuelvas a pedir doctor/horario salvo que cambie.
-- Si solo falta un dato, pedilo con una frase breve y amable (ej.: “¿Cuál sería tu número de contacto? 😊”).
-- Si el usuario usa referencias relativas (“próximo miércoles”, “mañana a las 3”), convertí la fecha/hora usando {now_iso} y {tz} y respondé con un horario explícito en formato 24h.
-- Si la hora sugerida queda fuera de 09:00–17:00, pedí ajustar la cita a un horario dentro de ese rango.
-- Indicá que vas a revisar la disponibilidad con el doctor elegido al momento de confirmar.
-- Usá VENTANA para evitar pedir algo que ya dio.
-- Si pide verificar/mover/cancelar, explicá brevemente que aún no está disponible aquí y ofrecé continuar con la recolección de datos.
+- Si faltan varios datos personales, pedilos juntos (usa missingFields como referencia) y mantén 2–3 emojis máximo.
+- Si solo falta un dato, pedilo con una frase breve.
+- Convierte referencias relativas (“mañana a las 3”) usando {now_iso}/{tz} y responde con horarios explícitos en formato 24h.
+- Si el usuario solicita mover/cancelar y la política no lo cubre, explicá brevemente y seguí con la recolección de datos.
 
-CUANDO YA ESTÁN TODOS LOS DATOS (a partir de VENTANA + MSG):
-- Asegurate de tener los cinco campos (nombre, número, correo, doctor, fecha/hora dentro de 09:00–17:00). Si falta algo, pedilo.
-- Cuando ya tengas todo, responde con una frase que resuma explícitamente paciente, número, correo, doctor y fecha/hora solicitada para que el usuario valide antes de avanzar. **Toda confirmación debe listar esos datos completos; nunca confirmes solo con “ok” o “entendido” sin detallar.**
-- Primero ejecutá la tool "calendar_check_availability" pasando startIso y endIso (30 minutos) para validar el horario. Si la respuesta indica que NO está libre, comunicalo y pedí otro horario antes de seguir.
-- Si el horario está disponible, decíle al usuario que hay cupo, vuelve a enumerar doctor + fecha/hora y pedile los datos que falten (nombre/teléfono/correo). Cuando ya los tengas, enumerá paciente/número/correo/doctor/fecha-hora y pedí la confirmación final explícita (ej.: “La doctora Amada está libre el sábado 8 nov 13:00 para Oscar (73145544, hola@…). ¿Confirmás que agendemos?”).
-- Cuando el usuario confirme (por ejemplo “sí”, “dale”, “agendalo”), ejecutá inmediatamente la tool "calendar_create_appointment" (30 minutos). NO repitas "calendar_check_availability" a menos que el usuario cambie fecha u hora; usá los mismos datos que acabás de validar en la conversación.
-- Después de usar la tool, respondé indicando que la cita quedó agendada mencionando nuevamente paciente, número, correo, doctor y horario específicos (misma regla: cada confirmación debe incluir todos los campos). NO digas que agendaste si la tool falló.
-- Si la tool devuelve un error, explicalo y pedí ajustar la hora.
-
-TONO / MICROCOPY:
-- Breve, claro, útil. 1–2 frases, 2–3 emojis máximo.
-- Agradecé cuando aporte datos (“¡Gracias! 😊 Lo anoto.”) y pedí el siguiente dato que falte. Evitá repetir la misma frase literal si el turno anterior del agente ya la dijo; variá con un cierre breve distinto.
-- Para elegir doctor, ofrecé explícitamente: “Gerardo” o “Amada”.
+CUANDO YA ESTÁ TODO:
+- Si availabilityStatus="free" y missingFields está vacío → resume y pedí confirmación.
+- Tras recibir confirmación → ejecutá appointments_create (30 min) y luego responde que quedó agendado, mencionando paciente, contacto, correo, doctor y fecha/hora.
+- Si un paciente pide mover una cita ya confirmada y tenés datos suficientes → reuní la nueva fecha/hora y usá appointments_reschedule.
+- Si pide cancelarla → confirmá datos y usá appointments_cancel.
+- Si alguna tool falla, contalo y pedí otro horario.
 
 Salida estricta (UN JSON válido, sin texto extra):
 {{ 
-  "a": string,  // respuesta breve (pregunta por un dato faltante o confirmación final con “cita agendada”)
-  "c": number,  // confianza 0..1
-  "tool"?: "calendar_create_appointment",
-  "args"?: object // argumentos para la tool (ej. summary, startIso, endIso, attendees, tenantId…). Para create debes incluir siempre "doctor".
+  "a": string,
+  "c": number,
+  "tool"?: "appointments_check_availability" | "appointments_create" | "appointments_reschedule" | "appointments_cancel",
+  "args"?: object
 }}
-
-Si devolvés "tool", asegurate de incluir todos los campos necesarios en "args" (el sistema agregará tenantId automáticamente). Ejemplos:
-- tool="calendar_check_availability", args con startIso="2025-11-07T14:00:00-06:00" y endIso="2025-11-07T14:30:00-06:00".
-- tool="calendar_create_appointment", args con summary="Consulta con Gerardo", startIso="2025-11-07T14:00:00-06:00", endIso="2025-11-07T14:30:00-06:00" y una lista de attendees (correo y nombre del paciente).
-
-EJEMPLO (nunca lo devuelvas literal, es solo guía):
-- Usuario: “Quiero cita mañana 2pm con Gerardo”
-- Agente: confirma doctor/horario y aclara que revisará disponibilidad.
-- Agente: usa calendar_check_availability → responde “Gerardo está libre mañana 14:00 para Ana (5551234, ana@...). Necesito tu confirmación para agendar, ¿sí?”
-- Usuario: “Sí, dale”
-- Agente: usa calendar_create_appointment con el mismo horario ya verificado → responde “Listo, quedó agendada con Gerardo mañana a las 14:00 para Ana (5551234, ana@...). 📅✅”
 
 VENTANA:
 {recent_window}
@@ -177,21 +160,33 @@ TIEMPO:
 @injectable()
 export class CalendarPromptService {
   private readonly prompt = new PromptTemplate({
-    inputVariables: ["message", "recent_window", "now_iso", "tz"],
+    inputVariables: ["message", "recent_window", "now_iso", "tz", "policy_summary"],
     template,
   });
   private readonly createAppointmentTool: DynamicStructuredTool<any, any>;
   private readonly checkAvailabilityTool: DynamicStructuredTool<any, any>;
+  private readonly rescheduleAppointmentTool: DynamicStructuredTool<any, any>;
+  private readonly cancelAppointmentTool: DynamicStructuredTool<any, any>;
 
-  constructor(@inject(CalendarService) private readonly calendarService: CalendarService) {
-    const tools = createCalendarTools(calendarService);
-    const createTool = tools.find((tool) => tool.name === "calendar_create_appointment");
-    const checkTool = tools.find((tool) => tool.name === "calendar_check_availability");
-    if (!createTool || !checkTool) {
-      throw new Error("Calendar tools not initialized");
+  constructor() {
+    const baseUrl = process.env.APPOINTMENTS_API_BASE_URL;
+    if (!baseUrl) {
+      throw new Error("APPOINTMENTS_API_BASE_URL env is required");
+    }
+    const normalizedBase = baseUrl.replace(/\/$/, "");
+
+    const tools = createCalendarTools({ baseUrl: normalizedBase });
+    const createTool = tools.find((tool) => tool.name === "appointments_create");
+    const checkTool = tools.find((tool) => tool.name === "appointments_check_availability");
+    const rescheduleTool = tools.find((tool) => tool.name === "appointments_reschedule");
+    const cancelTool = tools.find((tool) => tool.name === "appointments_cancel");
+    if (!createTool || !checkTool || !rescheduleTool || !cancelTool) {
+      throw new Error("Appointments tools not initialized");
     }
     this.createAppointmentTool = createTool;
     this.checkAvailabilityTool = checkTool;
+    this.rescheduleAppointmentTool = rescheduleTool;
+    this.cancelAppointmentTool = cancelTool;
   }
 
   async calendarAndAnswerLite(
@@ -215,6 +210,13 @@ export class CalendarPromptService {
     console.info(`[calendar.input/MSG] ${message ?? ""}`);
     console.info(`[calendar.input/VENTANA] ${recent_window ?? ""}`);
 
+    const policyState = analyzeCalendarConversation({
+      message: message ?? "",
+      recentWindow: recent_window ?? "",
+    });
+    const policySummary = buildPolicySummary(policyState);
+    console.log("[calendar.policy]", policyState);
+
     // LLM factory (await para evitar pipe de Promises) + tuning (JSON mime)
     const base = await getLLM();
     const tuned =
@@ -232,6 +234,7 @@ export class CalendarPromptService {
       recent_window: recent_window ?? "",
       now_iso: now_iso ?? new Date().toISOString(),
       tz: tz ?? "America/El_Salvador",
+      policy_summary: policySummary,
     });
     const tRender = process.hrtime.bigint();
 
@@ -295,11 +298,20 @@ export class CalendarPromptService {
 
     let toolMessage: string | null = null;
     let toolError: Error | null = null;
+    const missingCount = policyState.missingFields?.length ?? 0;
+
     if (out.tool) {
       const args = { ...(out.args ?? {}) };
       if (tenantId) {
         args.tenantId = tenantId;
       }
+      if (userId && !args.userId) {
+        args.userId = userId;
+      }
+      if (!args.doctor && policyState.doctorName) {
+        args.doctor = policyState.doctorName;
+      }
+
       if (!args.tenantId) {
         console.warn("[calendar.tool.skip] missing tenantId for tool call", {
           requestedTool: out.tool,
@@ -307,30 +319,35 @@ export class CalendarPromptService {
       } else {
         try {
           const logArgs: Record<string, unknown> = { ...args };
-          if (Array.isArray(logArgs.attendees)) {
-            logArgs.attendeesCount = (logArgs.attendees as unknown[]).length;
-            delete logArgs.attendees;
-          }
+          if (logArgs.patientPhone) logArgs.patientPhone = "***";
+          if (logArgs.patientEmail) logArgs.patientEmail = "***";
           console.log("[calendar.tool.invoke]", {
             tool: out.tool,
             args: logArgs,
           });
 
-          if (out.tool === "calendar_check_availability") {
-            if (!args.endIso && args.startIso) {
-              args.endIso = this.addMinutes(args.startIso as string, 30);
-            }
-            const result = await this.checkAvailabilityTool.call(args);
+          const tzToUse = tz ?? "America/El_Salvador";
+
+          if (out.tool === "appointments_check_availability") {
+            const prepared = this.prepareAvailabilityArgs(args, tzToUse);
+            const result = await this.checkAvailabilityTool.call(prepared);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
-          } else if (out.tool === "calendar_create_appointment") {
-            if (!args.endIso && args.startIso) {
-              args.endIso = this.addMinutes(args.startIso as string, 30);
-            }
-            const result = await this.createAppointmentTool.call(args);
+          } else if (out.tool === "appointments_create") {
+            const prepared = this.prepareCreateArgs(args, tzToUse);
+            const result = await this.createAppointmentTool.call(prepared);
+            toolMessage = typeof result === "string" ? result : JSON.stringify(result);
+          } else if (out.tool === "appointments_reschedule") {
+            const prepared = this.prepareRescheduleArgs(args, tzToUse);
+            const result = await this.rescheduleAppointmentTool.call(prepared);
+            toolMessage = typeof result === "string" ? result : JSON.stringify(result);
+          } else if (out.tool === "appointments_cancel") {
+            const prepared = this.prepareCancelArgs(args, tzToUse);
+            const result = await this.cancelAppointmentTool.call(prepared);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else {
             console.warn("[calendar.tool.skip] unsupported tool", { tool: out.tool });
           }
+
           console.log("[calendar.tool.success]", {
             tool: out.tool,
             tenantId: args.tenantId,
@@ -358,25 +375,33 @@ export class CalendarPromptService {
     );
 
     if (toolError) {
-      if (toolError instanceof CalendarEventConflictError) {
-        out.a =
-          "Ups, mientras confirmábamos alguien ocupó ese espacio. Elegí otra hora dentro de 09:00–17:00 y lo intento de nuevo. ⏳";
-        out.tool = undefined;
-        out.args = undefined;
+      if (toolError instanceof AppointmentsToolError) {
+        if (toolError.statusCode === 409) {
+          out.a =
+            "Ups, alguien tomó ese espacio mientras lo confirmábamos. Decime otro horario dentro de 09:00–17:00 y lo intento de nuevo. ⏳";
+        } else if (toolError.statusCode === 404) {
+          out.a = "No encontré esa cita con los datos que tenemos. Revisemos juntos y lo intento de nuevo.";
+        } else {
+          out.a =
+            "No pude actualizar la cita por un error interno. Probemos con otro horario o intentá más tarde, ¿te parece?";
+        }
       } else {
         out.a =
-          "No pude crear la cita por un error del calendario. Probemos con otro horario o intentá más tarde, ¿te parece?";
-        out.tool = undefined;
-        out.args = undefined;
+          "No pude completar la acción por un error interno. Probemos con otro horario o intentá más tarde, ¿te parece?";
       }
+      out.tool = undefined;
+      out.args = undefined;
     } else if (toolMessage) {
-      if (out.tool === "calendar_check_availability") {
-        const msg = this.buildAvailabilityMessage(toolMessage);
-        if (msg && !out.a) {
-          out.a = msg;
-        }
-      } else if (out.tool === "calendar_create_appointment" && !out.a) {
-        out.a = "Listo, agendé tu cita y quedó registrada ✅";
+      if (out.tool === "appointments_check_availability") {
+        const msg = this.buildAvailabilityMessage(toolMessage, missingCount);
+        if (msg) out.a = msg;
+      } else if (out.tool === "appointments_create") {
+        out.a = this.buildCreateConfirmationMessage(toolMessage, tz ?? "America/El_Salvador");
+        console.log("[calendar.tool.create.result]", toolMessage.slice(0, 200));
+      } else if (out.tool === "appointments_reschedule") {
+        out.a = this.buildRescheduleMessage(toolMessage, tz ?? "America/El_Salvador");
+      } else if (out.tool === "appointments_cancel") {
+        out.a = this.buildCancelMessage(toolMessage);
       }
     }
 
@@ -392,15 +417,408 @@ export class CalendarPromptService {
     return end.toISOString();
   }
 
-  private buildAvailabilityMessage(raw: string): string | null {
+  private buildAvailabilityMessage(raw: string, missingCount: number): string | null {
     try {
       const parsed = JSON.parse(raw) as { isFree?: boolean; busy?: unknown };
       if (parsed.isFree) {
-        return "Ese horario está libre ✅ ¿Confirmás que agendemos?";
+        if (missingCount > 0) {
+          return "Acabo de confirmar que ese horario está libre ✅. Necesito los datos que faltan para agendar (nombre, teléfono, correo).";
+        }
+        return "Acabo de confirmar que ese horario está libre ✅. Avisame si podemos agendar con esos datos.";
       }
-      return "Esa hora ya está ocupada 😕 ¿Te sirve otro horario dentro de 09:00–17:00?";
+      return "Esa hora ya está ocupada 😕 Elegí otra hora entre 09:00 y 17:00 y reviso nuevamente.";
     } catch {
       return null;
+    }
+  }
+
+  private buildCreateConfirmationMessage(raw: string, tz: string): string {
+    try {
+      const data = JSON.parse(raw) as Record<string, unknown>;
+      const doctor = (data.doctorName as string) ?? this.doctorNameFromId(data.doctorId as string) ?? "el doctor";
+      const when = this.formatIsoForUser((data.startIso as string) ?? (data.start as string), tz);
+      const appointmentId = data.appointmentId ? ` (ID ${data.appointmentId})` : "";
+      if (when) {
+        return `Perfecto, quedó agendada con ${doctor} el ${when}${appointmentId}. ✅`;
+      }
+      return `Perfecto, la cita quedó agendada${appointmentId ? ` (${appointmentId})` : ""} ✅.`;
+    } catch {
+      return "Perfecto, la cita quedó agendada ✅.";
+    }
+  }
+
+  private buildRescheduleMessage(raw: string, tz: string): string {
+    try {
+      const data = JSON.parse(raw) as Record<string, unknown>;
+      const when = this.formatIsoForUser((data.startIso as string) ?? (data.newStartIso as string), tz);
+      if (when) {
+        return `Listo, moví tu cita a ${when}. ✅`;
+      }
+      return "Listo, la cita se actualizó ✅.";
+    } catch {
+      return "Listo, la cita se actualizó ✅.";
+    }
+  }
+
+  private buildCancelMessage(raw: string): string {
+    try {
+      const data = JSON.parse(raw) as Record<string, unknown>;
+      const appointmentId = data.appointmentId ? ` (ID ${data.appointmentId})` : "";
+      return `Listo, cancelé la cita${appointmentId}. Cuando quieras volvemos a agendar.`;
+    } catch {
+      return "Listo, cancelé la cita. Cuando quieras volvemos a agendar.";
+    }
+  }
+
+  private prepareAvailabilityArgs(
+    args: Record<string, unknown>,
+    tz: string
+  ): Record<string, unknown> {
+    const prepared: Record<string, unknown> = { ...args };
+
+    if (!prepared.startIso) {
+      const isoFromDatetime = this.normalizeDatetimeField(prepared, tz);
+      if (isoFromDatetime) {
+        prepared.startIso = isoFromDatetime;
+        console.log("[calendar.tool.autofill]", {
+          field: "startIso",
+          value: isoFromDatetime,
+        });
+      } else {
+        const startFromHints = this.buildIsoFromHints(prepared, tz);
+        if (startFromHints) {
+          prepared.startIso = startFromHints;
+          console.log("[calendar.tool.autofill]", {
+            field: "startIso",
+            value: startFromHints,
+          });
+        }
+      }
+    }
+
+    if (!prepared.endIso && typeof prepared.startIso === "string") {
+      prepared.endIso = this.addMinutes(prepared.startIso, 30);
+    }
+
+    if (typeof prepared.startIso !== "string") {
+      throw new Error("startIso is required for appointment creation");
+    }
+    if (typeof prepared.endIso !== "string") {
+      prepared.endIso = this.addMinutes(prepared.startIso, 30);
+    }
+
+    if (typeof prepared.startIso !== "string") {
+      throw new Error("startIso is required for availability checks");
+    }
+    if (typeof prepared.endIso !== "string") {
+      prepared.endIso = this.addMinutes(prepared.startIso, 30);
+    }
+
+    const doctor = this.resolveDoctorInfo(prepared);
+    if (!doctor.doctorId) {
+      throw new Error("doctorId is required for availability checks");
+    }
+
+    return {
+      tenantId: prepared.tenantId,
+      doctorId: doctor.doctorId,
+      startIso: prepared.startIso,
+      endIso: prepared.endIso,
+    };
+  }
+
+  private prepareCreateArgs(
+    args: Record<string, unknown>,
+    tz: string
+  ): Record<string, unknown> {
+    const prepared: Record<string, unknown> = { ...args };
+
+    if (!prepared.startIso) {
+      const fromDatetime = this.normalizeDatetimeField(prepared, tz);
+      if (fromDatetime) {
+        prepared.startIso = fromDatetime;
+        console.log("[calendar.tool.autofill]", {
+          field: "startIso",
+          value: fromDatetime,
+        });
+      } else {
+        const fromHints = this.buildIsoFromHints(prepared, tz);
+        if (fromHints) {
+          prepared.startIso = fromHints;
+          console.log("[calendar.tool.autofill]", {
+            field: "startIso",
+            value: fromHints,
+          });
+        }
+      }
+    }
+
+    if (!prepared.endIso && typeof prepared.startIso === "string") {
+      prepared.endIso = this.addMinutes(prepared.startIso, 30);
+    }
+
+    const userId = this.pickString(prepared, ["userId"]);
+    if (!userId) {
+      throw new Error("userId is required for appointment creation");
+    }
+
+    const doctor = this.resolveDoctorInfo(prepared);
+    if (!doctor.doctorId) {
+      throw new Error("doctorId is required for appointment creation");
+    }
+
+    return {
+      tenantId: prepared.tenantId,
+      userId,
+      patientName: this.pickString(prepared, ["patientName", "nombre", "name"]) ?? "",
+      patientPhone: this.pickString(prepared, ["patientPhone", "phone", "telefono", "phoneNumber"]),
+      patientEmail: this.pickString(prepared, ["patientEmail", "email", "correo"]),
+      doctorId: doctor.doctorId,
+      doctorName: doctor.doctorName,
+      startIso: prepared.startIso,
+      endIso: prepared.endIso,
+      durationMinutes:
+        typeof prepared.durationMinutes === "number" && prepared.durationMinutes > 0
+          ? prepared.durationMinutes
+          : 30,
+      source: typeof prepared.source === "string" ? prepared.source : "whatsapp",
+      notes: typeof prepared.notes === "string" ? prepared.notes : undefined,
+    };
+  }
+
+  private prepareRescheduleArgs(
+    args: Record<string, unknown>,
+    tz: string
+  ): Record<string, unknown> {
+    const prepared: Record<string, unknown> = { ...args };
+
+    const identifierPresent =
+      typeof prepared.appointmentId === "string" ||
+      (typeof prepared.userId === "string" &&
+        (typeof prepared.startIso === "string" || typeof prepared.originalStartIso === "string"));
+
+    if (!identifierPresent) {
+      throw new Error("Provide appointmentId or (userId, startIso) to reschedule");
+    }
+
+    if (!prepared.newStartIso) {
+      const fromDatetime = this.normalizeDatetimeField(
+        { datetime: prepared.newDatetime ?? prepared.newStartIso },
+        tz
+      );
+      if (fromDatetime) {
+        prepared.newStartIso = fromDatetime;
+      } else {
+        const fromHints = this.buildIsoFromHints(
+          {
+            date: prepared.newDate ?? prepared.date,
+            time: prepared.newTime ?? prepared.time,
+          },
+          tz
+        );
+        if (fromHints) {
+          prepared.newStartIso = fromHints;
+        }
+      }
+    }
+
+    if (typeof prepared.newStartIso !== "string") {
+      throw new Error("newStartIso is required to reschedule");
+    }
+
+    if (!prepared.newEndIso) {
+      prepared.newEndIso = this.addMinutes(
+        prepared.newStartIso,
+        typeof prepared.durationMinutes === "number" ? prepared.durationMinutes : 30
+      );
+    }
+
+    const doctor = this.resolveDoctorInfo(prepared, {
+      idKeys: ["newDoctorId", "doctorId", "doctor"],
+      nameKeys: ["newDoctorName", "doctorName", "doctor"],
+    });
+
+    return {
+      tenantId: prepared.tenantId,
+      appointmentId: prepared.appointmentId,
+      userId: prepared.userId,
+      doctorId: doctor.doctorId,
+      startIso: prepared.startIso ?? prepared.originalStartIso,
+      newStartIso: prepared.newStartIso,
+      newEndIso: prepared.newEndIso,
+      durationMinutes:
+        typeof prepared.durationMinutes === "number" && prepared.durationMinutes > 0
+          ? prepared.durationMinutes
+          : 30,
+      newDoctorId: doctor.doctorId,
+      newDoctorName: doctor.doctorName,
+      notes: typeof prepared.notes === "string" ? prepared.notes : undefined,
+    };
+  }
+
+  private prepareCancelArgs(
+    args: Record<string, unknown>,
+    tz: string
+  ): Record<string, unknown> {
+    const prepared: Record<string, unknown> = { ...args };
+
+    if (!prepared.appointmentId) {
+      if (!prepared.startIso) {
+        const isoFromDatetime = this.normalizeDatetimeField(prepared, tz);
+        if (isoFromDatetime) {
+          prepared.startIso = isoFromDatetime;
+        } else {
+          const fromHints = this.buildIsoFromHints(prepared, tz);
+          if (fromHints) {
+            prepared.startIso = fromHints;
+          }
+        }
+      }
+
+      if (!prepared.userId || !prepared.startIso) {
+        throw new Error("Provide appointmentId or (userId, startIso) to cancel");
+      }
+    }
+
+    const doctor = this.resolveDoctorInfo(prepared);
+
+    return {
+      tenantId: prepared.tenantId,
+      appointmentId: prepared.appointmentId,
+      userId: prepared.userId,
+      doctorId: doctor.doctorId,
+      startIso: prepared.startIso,
+    };
+  }
+
+  private buildIsoFromHints(
+    args: Record<string, unknown>,
+    tz: string
+  ): string | null {
+    const dateStr = typeof args.date === "string" ? args.date : undefined;
+    const timeStr = typeof args.time === "string" ? args.time : undefined;
+    if (!dateStr || !timeStr) return null;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) return null;
+
+    const normalizedTime = this.normalizeTimeHint(timeStr);
+    if (!normalizedTime) return null;
+
+    const offset = this.getTzOffset(tz);
+    return `${dateStr}T${normalizedTime}:00${offset}`;
+  }
+
+  private normalizeTimeHint(time: string): string | null {
+    const isoMatch = time.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+    if (isoMatch) {
+      const h = isoMatch[1].padStart(2, "0");
+      const m = isoMatch[2].padStart(2, "0");
+      return `${h}:${m}`;
+    }
+
+    const ampmMatch = time.match(/^(\d{1,2})(?::(\d{2}))?\s?(am|pm)$/i);
+    if (!ampmMatch) return null;
+    let hour = parseInt(ampmMatch[1], 10);
+    const minutes = ampmMatch[2] ? parseInt(ampmMatch[2], 10) : 0;
+    const suffix = ampmMatch[3].toLowerCase();
+    if (suffix === "pm" && hour < 12) hour += 12;
+    if (suffix === "am" && hour === 12) hour = 0;
+    const hh = hour.toString().padStart(2, "0");
+    const mm = minutes.toString().padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+
+  private getTzOffset(tz: string): string {
+    if (tz === "America/El_Salvador") return "-06:00";
+    return "Z";
+  }
+
+  private normalizeDatetimeField(
+    args: Record<string, unknown>,
+    tz: string
+  ): string | null {
+    const datetime = typeof args.datetime === "string" ? args.datetime : undefined;
+    if (!datetime) return null;
+    if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?(Z|[+-]\d{2}:\d{2})?$/.test(datetime)) {
+      return datetime.includes("Z") || /[+-]\d{2}:\d{2}$/.test(datetime)
+        ? datetime
+        : `${datetime}${this.getTzOffset(tz)}`;
+    }
+    const parsed = new Date(datetime);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed.toISOString();
+  }
+
+  private resolveDoctorInfo(
+    args: Record<string, unknown>,
+    opts?: { idKeys?: string[]; nameKeys?: string[] }
+  ): { doctorId?: string; doctorName?: string } {
+    const idKeys = opts?.idKeys ?? ["doctorId", "doctor"];
+    const nameKeys = opts?.nameKeys ?? ["doctorName", "doctor"];
+
+    for (const key of idKeys) {
+      const value = this.pickString(args, [key]);
+      const normalized = this.normalizeDoctorId(value);
+      if (normalized) {
+        return { doctorId: normalized, doctorName: this.doctorNameFromId(normalized) };
+      }
+    }
+
+    for (const key of nameKeys) {
+      const value = this.pickString(args, [key]);
+      const normalized = this.normalizeDoctorId(value);
+      if (normalized) {
+        return { doctorId: normalized, doctorName: this.doctorNameFromId(normalized) };
+      }
+      if (value) {
+        return { doctorId: value.toLowerCase(), doctorName: value };
+      }
+    }
+
+    return {};
+  }
+
+  private doctorNameFromId(id?: string): string | undefined {
+    if (!id) return undefined;
+    if (id === "gerardo") return "Gerardo";
+    if (id === "amada") return "Amada";
+    return id.replace(/-/g, " ");
+  }
+
+  private normalizeDoctorId(value?: string | null): string | null {
+    if (!value) return null;
+    const clean = value.toString().trim().toLowerCase();
+    if (!clean) return null;
+    if (clean.includes("ama")) return "amada";
+    if (clean.includes("ger")) return "gerardo";
+    return clean.replace(/\s+/g, "-");
+  }
+
+  private pickString(args: Record<string, unknown>, keys: string[]): string | undefined {
+    for (const key of keys) {
+      const value = args[key];
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return undefined;
+  }
+
+  private formatIsoForUser(iso: string | undefined, tz: string): string | null {
+    if (!iso) return null;
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return null;
+    try {
+      return date.toLocaleString("es-SV", {
+        timeZone: tz,
+        weekday: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        day: "2-digit",
+        month: "2-digit",
+      });
+    } catch {
+      return date.toISOString();
     }
   }
 }
