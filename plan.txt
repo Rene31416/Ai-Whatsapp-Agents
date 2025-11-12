@@ -1,0 +1,58 @@
+Architecture Plan (Source of Truth in DynamoDB)
+==============================================
+
+1. Dynamo Schema & API
+----------------------
+- Table becomes system of record for appointments. Fields:
+  - PK/SK (e.g., TENANT#<tenantId> / DOCTOR#<doctorId>#<timestamp>)
+  - patientName, phone, email, doctorId/name, dateTime, status (pending/confirmed/cancelled)
+  - calendarSyncOk (bool), calendarEventId, createdBy, updatedAt, notes.
+- Expose endpoints (to be used by LLM and portal):
+  1. `POST /appointments` (create)
+  2. `PATCH /appointments/{id}` (reschedule)
+  3. `DELETE /appointments/{id}` (cancel)
+  4. `GET /availability?tenantId=...&doctorId=...&date=...`
+- Implement Lambda handlers behind API Gateway. Each write emits EventBridge/SQS events: `appointment.created`, `appointment.updated`, `appointment.cancelled`.
+
+2. Calendar Sync (Optional per tenant)
+--------------------------------------
+- Lambda `calendar-sync` subscribes to the appointment events:
+  - If tenant has Google secret, create/update/cancel event in Google Calendar.
+  - Update Dynamo record with `calendarSyncOk=true/false`, `calendarEventId`.
+- Add reverse sync path (Google webhook or scheduled poll) to reflect manual changes back into Dynamo.
+- If sync fails, keep appointment in Dynamo, set `calendarSyncOk=false`, trigger alert/email for manual follow-up.
+
+3. Bot Integration
+------------------
+- LLM stops calling Google tools directly.
+- After collecting doctor/date/time + user data and receiving “sí, confirmo”, the agent invokes the new `/appointments` tool.
+- Availability checks hit our `/availability` endpoint (backed by Dynamo, optionally consulting Google before confirming).
+- All conversation logic (missing fields, confirmations) continues as today but tools now talk only to our API.
+
+4. Doctor Portal
+----------------
+- Fetch appointments from Dynamo and render a calendar view (day/week) by doctor.
+- Actions (confirm, reschedule, cancel) call the same endpoints so everything flows through Dynamo/events.
+- Show sync status (e.g., badge if `calendarSyncOk=false`) so the doctor knows si la cita llegó a Google.
+
+5. Chat History
+---------------
+- Surface messages from `ChatBufferMessage` (or equivalent) in the portal:
+  - List conversations per tenant/user.
+  - Search by user/keywords, see WhatsApp-style thread view.
+  - Useful for soporte y revisiones manuales.
+
+6. Observability / Alerts
+-------------------------
+- Metrics on appointment creations, reschedules, cancellations, sync successes/failures.
+- Alert when calendar sync fails (e.g., send email/slack to doctor/ops).
+- Track endpoint latency/errors since they become critical path.
+
+Implementation Sequence
+-----------------------
+1. Define Dynamo schema + create CRUD Lambdas/endpoints.
+2. Update bot to call the new tools (availability + create/reschedule/cancel).
+3. Build doctor portal calendar UI consuming Dynamo.
+4. Add EventBridge/SQS plumbing + calendar-sync Lambda (optional per tenant).
+5. Expose chat history in portal.
+6. Add observability/alerts around the new services.
