@@ -113,7 +113,7 @@ export class ChatService {
           await this.enqueuePostOps(job, { identify_intent, confidence });
 
           // 7) Clear buffer best effort
-          await this.clearBuffer(job);
+          //await this.clearBuffer(job);
 
           this.log.info("chat.handle.done");
           return; // ← No enviamos ni persistimos agent
@@ -144,7 +144,7 @@ export class ChatService {
       await this.enqueuePostOps(job, { identify_intent, confidence });
 
       // 7) Clear buffer
-      await this.clearBuffer(job);
+     // await this.clearBuffer(job);
 
       this.log.info("chat.handle.done");
     } catch (e) {
