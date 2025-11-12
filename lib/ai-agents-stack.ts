@@ -66,6 +66,36 @@ export class AiAgentsStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
+    const appointmentsTable = new dynamodb.Table(this, "Appointments", {
+      partitionKey: { name: "PK", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
+      encryptionKey: dataKey,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    appointmentsTable.addGlobalSecondaryIndex({
+      indexName: "UserAppointmentsIndex",
+      partitionKey: { name: "UserKey", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "StartKey", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    appointmentsTable.addGlobalSecondaryIndex({
+      indexName: "DoctorScheduleIndex",
+      partitionKey: { name: "DoctorKey", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "StartKey", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
+    appointmentsTable.addGlobalSecondaryIndex({
+      indexName: "StatusIndex",
+      partitionKey: { name: "StatusKey", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "StartKey", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+    });
+
     // 💬 Buffer table (Streams/TTL removed to avoid noise)
     const chatBufferTable = new dynamodb.Table(this, "ChatMessageBuffer", {
       partitionKey: { name: "UserKey", type: dynamodb.AttributeType.STRING },
@@ -138,6 +168,8 @@ export class AiAgentsStack extends cdk.Stack {
         GEMINI_SECRET_ARN: geminiSecret.secretArn,
         WHATSAPP_SECRET_ARN: whatsAppSecretArn,
         CHAT_INGRESS_QUEUE_URL: chatIngressQueue.queueUrl,
+        TENANT_TABLE_NAME: tenantTable.tableName,
+        TENANT_GSI_PHONE: "PhoneNumberIdIndex",
       },
     });
 
@@ -291,6 +323,24 @@ export class AiAgentsStack extends cdk.Stack {
       })
     );
 
+    const appointmentsLambda = new lambda.Function(this, "AppointmentsLambda", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      architecture: lambda.Architecture.ARM_64,
+      handler: "appointments.handler",
+      code: lambda.Code.fromAsset(path.join(__dirname, "../dist")),
+      timeout: cdk.Duration.seconds(60),
+      memorySize: 512,
+      environment: {
+        SERVICE_NAME: "appointments-lambda",
+        APPOINTMENTS_TABLE_NAME: appointmentsTable.tableName,
+        APPOINTMENTS_GSI_USER: "UserAppointmentsIndex",
+        APPOINTMENTS_GSI_DOCTOR: "DoctorScheduleIndex",
+        APPOINTMENTS_GSI_STATUS: "StatusIndex",
+      },
+    });
+
+    appointmentsTable.grantReadWriteData(appointmentsLambda);
+
     // 🌐 API Gateway
     const api = new apigateway.LambdaRestApi(this, "AgentsApi", {
       handler: webhookLambda,
@@ -301,6 +351,24 @@ export class AiAgentsStack extends cdk.Stack {
     webhook.addMethod("GET", new apigateway.LambdaIntegration(webhookLambda));
     webhook.addMethod("POST", new apigateway.LambdaIntegration(webhookLambda));
 
+    const appointmentsResource = api.root.addResource("appointments");
+    const appointmentIdResource = appointmentsResource.addResource("{appointmentId}");
+    const availabilityResource = appointmentsResource.addResource("availability");
+    const appointmentsIntegration = new apigateway.LambdaIntegration(appointmentsLambda);
+
+    appointmentsResource.addMethod("POST", appointmentsIntegration);
+    appointmentsResource.addMethod("PATCH", appointmentsIntegration);
+    appointmentsResource.addMethod("DELETE", appointmentsIntegration);
+    appointmentIdResource.addMethod("PATCH", appointmentsIntegration);
+    appointmentIdResource.addMethod("DELETE", appointmentsIntegration);
+    availabilityResource.addMethod("GET", appointmentsIntegration);
+
+    chatServiceLambda.addEnvironment(
+      "APPOINTMENTS_API_BASE_URL",
+      cdk.Fn.join("", [api.url, "appointments"])
+    );
+
+    new cdk.CfnOutput(this, "AppointmentsTableName", { value: appointmentsTable.tableName });
     new cdk.CfnOutput(this, "WebhookUrl", { value: `${api.url}webhook` });
     new cdk.CfnOutput(this, "MemoryTableName", { value: memoryTable.tableName });
   }

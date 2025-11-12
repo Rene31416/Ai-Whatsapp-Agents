@@ -15,6 +15,10 @@ import { ContactFactsExtractorService } from "../prompts/facts.prompt";
 import { CalendarPromptService } from "../prompts/calendar.prompt";
 import { DentalWorkflow } from "../workflow/main.workflow";
 import { CalendarService } from "../services/calendar.service";
+import { TenantRepository } from "../services/tenant.repository";
+import { AppointmentsRepository } from "../services/appointments.repository";
+import { AppointmentsService } from "../services/appointments.service";
+import { AppointmentsController } from "../controller/appointments.controller";
 // import { DentalWorkflow } from "../chat/dental.workflow";
 
 const container = new Container({ defaultScope: "Singleton" });
@@ -25,10 +29,14 @@ container.bind(MemoryRepository).toSelf();
 container.bind(WhatsappService).toSelf();
 container.bind(PostOpsService).toSelf();
 container.bind(CalendarService).toSelf();
+container.bind(TenantRepository).toSelf();
+container.bind(AppointmentsRepository).toSelf();
+container.bind(AppointmentsService).toSelf();
 container.bind(ChatService).toSelf();
 
 // Controllers / misc
 container.bind(WhatsappController).toSelf();
+container.bind(AppointmentsController).toSelf();
 container.bind(ConsoleLogger).toSelf();
 container.bind(ContactFactsExtractorService).toSelf();
 container.bind(CalendarPromptService).toSelf();
