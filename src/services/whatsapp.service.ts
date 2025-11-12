@@ -5,6 +5,7 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
+import { TenantRepository } from "./tenant.repository";
 
 export interface WhatsappSecrets {
   WHATSAPP_ACCESS_TOKEN: string;
@@ -14,7 +15,10 @@ export interface WhatsappSecrets {
 
 @injectable()
 export class WhatsappService {
-  constructor(@inject(Logger) private readonly log: Logger) {}
+  constructor(
+    @inject(Logger) private readonly log: Logger,
+    @inject(TenantRepository) private readonly tenants: TenantRepository
+  ) {}
 
   /**
    * Return WhatsApp API credentials for a given tenant.
@@ -49,16 +53,19 @@ export class WhatsappService {
     }
 
     // Lambda / real path
-    const baseArn = process.env.WHATSAPP_SECRET_ARN;
-    if (!baseArn) {
-      throw new Error("WHATSAPP_SECRET_ARN env is required");
+    const tenant = await this.tenants.getById(tenantId);
+    if (!tenant?.whatsappSecretName) {
+      throw new Error(`Tenant ${tenantId} missing whatsappSecretName`);
     }
 
-    const secretArn = `${baseArn}${tenantId}`;
+    const secretId = this.resolveSecretId(
+      tenant.whatsappSecretName,
+      process.env.WHATSAPP_SECRET_ARN
+    );
 
     const client = new SecretsManagerClient({});
     const res = await client.send(
-      new GetSecretValueCommand({ SecretId: secretArn })
+      new GetSecretValueCommand({ SecretId: secretId })
     );
 
     if (!res.SecretString) {
@@ -135,5 +142,18 @@ export class WhatsappService {
       to: toWaId,
       httpStatus: response.status,
     });
+  }
+
+  private resolveSecretId(secretName: string, prefix?: string): string {
+    if (secretName.startsWith("arn:aws:secretsmanager")) {
+      return secretName;
+    }
+    if (!prefix) {
+      return secretName;
+    }
+    const normalizedPrefix = prefix.endsWith(":secret:")
+      ? prefix
+      : prefix.replace(/[^:]+$/, "");
+    return `${normalizedPrefix}${secretName}`;
   }
 }

@@ -7,11 +7,17 @@ import {
   queryParam,
 } from "ts-lambda-api";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
+import { inject } from "inversify";
+import { TenantRepository } from "../services/tenant.repository";
 
 const sqs = new SQSClient({});
 
 @apiController("/webhook")
 export class WhatsappController extends Controller {
+  constructor(@inject(TenantRepository) private readonly tenantRepo: TenantRepository) {
+    super();
+  }
+
   // 🔐 GET /webhook — Meta verification using Secrets Manager
   @GET("/")
   async verifyWebhook(
@@ -61,9 +67,15 @@ export class WhatsappController extends Controller {
       if (!messageId) return { status: "ok", ignored: "missing_message_id" };
       if (!text) return { status: "ok", ignored: "empty_text" };
 
+      const tenant = await this.tenantRepo.getByPhoneNumberId(phoneNumberId);
+      if (!tenant) {
+        console.warn("❌ Unknown phone number", { phoneNumberId });
+        return { statusCode: 403, body: { detail: "Phone number not registered" } };
+      }
+
       const nowIso = new Date().toISOString();
       const payload = {
-        tenantId: phoneNumberId,
+        tenantId: tenant.tenantId,
         userId: from,
         combinedText: text,
         messageCount: 1,
