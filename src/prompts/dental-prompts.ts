@@ -24,7 +24,7 @@ export const DecisionLiteSchema = z.object({
   //   apptAt: z.string().min(1).max(80).nullable(), // ISO8601 UTC like "2025-11-03T21:00:00Z" or null
   //   notes: z.string().min(1).max(200).nullable(),
   // }),
-});
+}); 
 export type DecisionLite = z.infer<typeof DecisionLiteSchema>;
 
 // ===== 2. Raw shape we expect FROM the LLM =====
