@@ -309,7 +309,7 @@ export class CalendarService {
       clientId: parsed.clientId,
       clientSecret: parsed.clientSecret,
       redirectUri: parsed.redirectUri,
-    };
+    }; 
   }
 
   private resolveSecretId(secretName: string, prefix?: string): string {
