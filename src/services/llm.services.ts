@@ -49,7 +49,7 @@ async function getOpenAIApiKey(): Promise<string> {
     cachedOpenAIKey = secret.OPENAI_API_KEY;
     if (!cachedOpenAIKey)
       throw new Error("OPENAI_API_KEY missing in OpenAI secret JSON");
-    return cachedOpenAIKey;
+    return cachedOpenAIKey; 
   }
   const envKey = process.env.OPENAI_API_KEY;
   if (!envKey) {

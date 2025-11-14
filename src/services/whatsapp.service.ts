@@ -143,7 +143,7 @@ export class WhatsappService {
       httpStatus: response.status,
     });
   }
-
+ 
   private resolveSecretId(secretName: string, prefix?: string): string {
     if (secretName.startsWith("arn:aws:secretsmanager")) {
       return secretName;
