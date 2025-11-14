@@ -24,7 +24,7 @@ process.env.AWS_REGION ||= "us-east-1";
 // Prevent real WhatsApp sends in local mode
 process.env.LOCAL_DRY_RUN ||= "true";
 
-// Basic sanity checks: these env vars must exist or the repos will fail
+// Basic sanity checks: these env v ars must exist or the repos will fail
 if (!process.env.MEMORY_TABLE_NAME) {
   console.error("MEMORY_TABLE_NAME env is required for local test");
 }
