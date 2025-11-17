@@ -167,7 +167,7 @@ export class AppointmentsController extends Controller {
 
   private handleError(error: unknown) {
     if (error instanceof z.ZodError) {
-      return { statusCode: 400, body: { message: "Invalid request", details: error.errors } };
+      return { statusCode: 400, body: { message: "Invalid request", details: error.issues } };
     }
 
     const message = (error as Error)?.message ?? "Unexpected error";
