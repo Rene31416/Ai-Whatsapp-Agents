@@ -10,11 +10,7 @@ import { PostOpsService } from "./post.ops.service";
 
 import { buildFactsHeader, buildRecentWindow } from "../helper/prompts.helper";
 import { DentalWorkflow } from "../workflow/main.workflow";
-
-
-import { DynamoDBClient, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
-
-const ddb = new DynamoDBClient({});
+import { DoctorsRepository, DoctorRecord } from "./doctors.repository";
 
 type ChatJob = {
   tenantId: string;
@@ -48,7 +44,7 @@ export class ChatService {
     @inject(WhatsappService) private readonly whatsapp: WhatsappService,
     @inject(PostOpsService) private readonly postOps: PostOpsService,
     @inject(DentalWorkflow) private readonly wf: DentalWorkflow, // 👈 añade esto
- 
+    @inject(DoctorsRepository) private readonly doctorsRepo: DoctorsRepository
   ) {}
 
   async handleRecord(record: SQSRecord): Promise<void> {
@@ -76,6 +72,9 @@ export class ChatService {
     this.log.info("chat.handle.start");
 
     try {
+      // 0) Doctors list for this tenant (for downstream calendar flow)
+      const doctors = await this.loadDoctors(job.tenantId);
+
       // 1) Windows
       const windows = await this.buildWindows(job);
 
@@ -85,7 +84,8 @@ export class ChatService {
       // 3) Run workflow
       const { reply, identify_intent, confidence, isCalendar } = await this.runWorkflow(
         job,
-        windows
+        windows,
+        doctors
       );
 
       // 3.1) Política de envío:
@@ -218,9 +218,19 @@ export class ChatService {
     return { factsHeader, recentWindow, greetOk };
   }
 
+  private async loadDoctors(tenantId: string): Promise<DoctorRecord[]> {
+    try {
+      return await this.doctorsRepo.listByTenant(tenantId);
+    } catch (e) {
+      this.log.warn("chat.doctors.load.fail", { msg: (e as Error)?.message });
+      return [];
+    }
+  }
+
   private async runWorkflow(
     job: ChatJob,
-    w: Windows
+    w: Windows,
+    doctors: DoctorRecord[]
   ): Promise<{
     reply: string;
     identify_intent: boolean;
@@ -232,7 +242,8 @@ export class ChatService {
       w.factsHeader,
       w.recentWindow,
       job.tenantId,
-      job.userId
+      job.userId,
+      doctors
     );
 
     const reply = (state?.final_answer ?? "").trim();
@@ -286,17 +297,4 @@ export class ChatService {
     }
   }
 
-  private async clearBuffer(job: ChatJob): Promise<void> {
-    try {
-      await ddb.send(
-        new DeleteItemCommand({
-          TableName: process.env.CHAT_BUFFER_TABLE_NAME!,
-          Key: { UserKey: { S: job.userKey } },
-        })
-      );
-      this.log.info("chat.buffer.cleared", { userKey: job.userKey });
-    } catch (e) {
-      this.log.warn("chat.buffer.clear.fail", { msg: (e as Error).message });
-    }
-  }
 }

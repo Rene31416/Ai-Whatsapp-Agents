@@ -63,7 +63,7 @@ export class CalendarEventConflictError extends Error {
 }
 
 @injectable()
-export class CalendarService {
+export class GoogleCalendarService {
   private readonly secretsClient = new SecretsManagerClient({});
 
   constructor(

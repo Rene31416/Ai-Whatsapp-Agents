@@ -12,6 +12,7 @@ type GraphState = {
   final_answer: string;
   tenantId: string;
   userId: string;
+  doctors?: Array<{ doctorId: string; displayName: string; availabilityHours?: string }>;
 };
 
 @injectable()
@@ -57,6 +58,11 @@ export class DentalWorkflow {
       userId: Annotation<string>({
         value: String,
         default: () => "",
+        reducer: (_p, n) => n,
+      }),
+      doctors: Annotation<Array<{ doctorId: string; displayName: string; availabilityHours?: string }> | undefined>({
+        value: Array,
+        default: () => [],
         reducer: (_p, n) => n,
       }),
     });
@@ -148,6 +154,7 @@ export class DentalWorkflow {
       tz,
       tenantId: state.tenantId,
       userId: state.userId,
+      doctors: state.doctors ?? [],
     });
 
     const answer = (a ?? "").trim();
@@ -166,7 +173,8 @@ export class DentalWorkflow {
     facts_header: string,
     recent_window: string,
     tenantId: string,
-    userId: string
+    userId: string,
+    doctors: Array<{ doctorId: string; displayName: string; availabilityHours?: string }>
   ): Promise<GraphState> {
     return this.app.invoke({
       message,
@@ -175,6 +183,7 @@ export class DentalWorkflow {
       final_answer: "",
       tenantId,
       userId,
+      doctors,
     });
   }
 }
