@@ -5,7 +5,7 @@ import { JsonOutputParser } from "@langchain/core/output_parsers";
 import { DynamicStructuredTool } from "langchain/tools";
 import { z } from "zod";
 import { getLLM } from "../services/llm.services";
-import { AppointmentsToolError, createCalendarTools } from "./calendar.tools";
+import { AppointmentsToolError, createAppointmentsTools } from "./appointments.tools";
 import { analyzeCalendarConversation, buildPolicySummary } from "./calendar.policy";
 
 
@@ -23,6 +23,7 @@ export type CalendarLiteInput = {
   // campos opcionales para logging/telemetría si querés forwardear:
   tenantId?: string;
   userId?: string;
+  doctors?: Array<{ doctorId: string; displayName: string; availabilityHours?: string }>;
 };
 
 export type CalendarLiteOutput = {
@@ -48,6 +49,22 @@ const CalendarLiteSchema = z.object({
 });
 
 const parser = new JsonOutputParser<CalendarLiteOutput>();
+
+function extractFirstJsonObject(text: string): string | null {
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}") {
+      depth--;
+      if (depth === 0) {
+        return text.slice(start, i + 1);
+      }
+    }
+  }
+  return null;
+}
 
 // -------------------- helpers (idéntico patrón robusto) --------------------
 function stripJsonFences(s: string): string {
@@ -99,6 +116,10 @@ function ms(from: bigint, to: bigint) {
 const template = `
 Eres un agente de CALENDARIO. Respondé en español, estilo WhatsApp, breve y natural (máx 2 frases, 2–3 emojis). No menciones herramientas.
 
+DOCTORES DISPONIBLES:
+- Usa solo esta lista para ofrecer/aceptar doctores. Si falta doctor, pedí elegir uno de la lista.
+{doctors_list}
+
 ESTILO / SALUDOS:
 - Solo saluda si VENTANA está vacía o el mensaje actual es un saludo simple.
 - No te autopresentes si ya hubo conversación reciente.
@@ -109,9 +130,9 @@ POLÍTICAS CALCULADAS (JSON):
 {policy_summary}
 
 Lee el JSON y actúa según esos flags:
-- Si doctorKnown=false → pedí doctor (Gerardo o Amada).
-- Si doctorKnown=true pero el mensaje trae un doctor distinto al anterior, asumilo y repetilo de forma clara (ej.: “Perfecto, la agendo con la doctora Amada…”).
-- Si hasDateTimeInfo=false → pedí fecha/hora explícita (24h o am/pm) y explica que dura 30 min.
+- Si doctorKnown=false → pedí que elija uno de los DOCTORES DISPONIBLES.
+- Si doctorKnown=true pero el mensaje trae un doctor distinto al anterior, asumilo y repetilo de forma clara.
+- Si hasDateTimeInfo=false → pedí fecha y hora explícita (24h o am/pm) junto con el doctor (si falta algo, pedilo todo en un solo mensaje) y explica que dura 30 min.
 - Si clinicHoursOk=false → indicá que debe ser entre 09:00–17:00 y pedí otra hora.
 - Si needsAvailabilityCheck=true → avisá que revisarás disponibilidad y usa la tool appointments_check_availability antes de afirmar resultados.
 - Cuando availabilityStatus="free" → indicá que acabás de confirmar el horario y pedí los datos faltantes (sin pedir confirmación todavía).
@@ -125,9 +146,9 @@ OBJETIVO:
 - Evitá pedir datos que ya figuran en la conversación.
 
 POLÍTICA DE RECOLECCIÓN:
-- Si faltan varios datos personales, pedilos juntos (usa missingFields como referencia) y mantén 2–3 emojis máximo.
+- Si faltan varios datos personales, pedilos juntos (usa missingFields como referencia) y mantené 2–3 emojis máximo.
 - Si solo falta un dato, pedilo con una frase breve.
-- Convierte referencias relativas (“mañana a las 3”) usando {now_iso}/{tz} y responde con horarios explícitos en formato 24h.
+- Convertí referencias relativas (“mañana a las 3”) usando {now_iso}/{tz} y responde con horarios explícitos en formato 24h.
 - Si el usuario solicita mover/cancelar y la política no lo cubre, explicá brevemente y seguí con la recolección de datos.
 
 CUANDO YA ESTÁ TODO:
@@ -138,7 +159,7 @@ CUANDO YA ESTÁ TODO:
 - Si alguna tool falla, contalo y pedí otro horario.
 
 Salida estricta (UN JSON válido, sin texto extra):
-{{ 
+{{
   "a": string,
   "c": number,
   "tool"?: "appointments_check_availability" | "appointments_create" | "appointments_reschedule" | "appointments_cancel",
@@ -155,44 +176,26 @@ TIEMPO:
 {now_iso} ({tz})
 `.trim();
 
-
-
 @injectable()
 export class CalendarPromptService {
   private readonly prompt = new PromptTemplate({
-    inputVariables: ["message", "recent_window", "now_iso", "tz", "policy_summary"],
+    inputVariables: ["message", "recent_window", "now_iso", "tz", "policy_summary", "doctors_list"],
     template,
   });
-  private readonly createAppointmentTool: DynamicStructuredTool<any, any>;
-  private readonly checkAvailabilityTool: DynamicStructuredTool<any, any>;
-  private readonly rescheduleAppointmentTool: DynamicStructuredTool<any, any>;
-  private readonly cancelAppointmentTool: DynamicStructuredTool<any, any>;
+  private readonly baseUrl: string;
 
   constructor() {
     const baseUrl = process.env.APPOINTMENTS_API_BASE_URL;
     if (!baseUrl) {
       throw new Error("APPOINTMENTS_API_BASE_URL env is required");
     }
-    const normalizedBase = baseUrl.replace(/\/$/, "");
-
-    const tools = createCalendarTools({ baseUrl: normalizedBase });
-    const createTool = tools.find((tool) => tool.name === "appointments_create");
-    const checkTool = tools.find((tool) => tool.name === "appointments_check_availability");
-    const rescheduleTool = tools.find((tool) => tool.name === "appointments_reschedule");
-    const cancelTool = tools.find((tool) => tool.name === "appointments_cancel");
-    if (!createTool || !checkTool || !rescheduleTool || !cancelTool) {
-      throw new Error("Appointments tools not initialized");
-    }
-    this.createAppointmentTool = createTool;
-    this.checkAvailabilityTool = checkTool;
-    this.rescheduleAppointmentTool = rescheduleTool;
-    this.cancelAppointmentTool = cancelTool;
+    this.baseUrl = baseUrl.replace(/\/$/, "");
   }
 
   async calendarAndAnswerLite(
     input: CalendarLiteInput
   ): Promise<CalendarLiteOutput> {
-    const { message, recent_window, now_iso, tz, tenantId, userId } = input;
+    const { message, recent_window, now_iso, tz, tenantId, userId, doctors } = input;
 
     // LOG: entrada
     console.log(
@@ -207,15 +210,18 @@ export class CalendarPromptService {
     );
 
     console.log("//////////////////////// CALENDAR WINDOW ////////////////");
-    console.info(`[calendar.input/MSG] ${message ?? ""}`);
-    console.info(`[calendar.input/VENTANA] ${recent_window ?? ""}`);
+    console.info("[calendar.input/MSG]", message ?? "");
+    console.info("[calendar.input/VENTANA]", recent_window ?? "");
 
     const policyState = analyzeCalendarConversation({
       message: message ?? "",
       recentWindow: recent_window ?? "",
     });
     const policySummary = buildPolicySummary(policyState);
-    console.log("[calendar.policy]", policyState);
+    console.log("[calendar.policy]", {
+      ...policyState,
+      doctors: (doctors ?? []).map((d) => ({ id: d.doctorId, name: d.displayName })),
+    });
 
     // LLM factory (await para evitar pipe de Promises) + tuning (JSON mime)
     const base = await getLLM();
@@ -229,18 +235,34 @@ export class CalendarPromptService {
 
     // Render explícito (mismo patrón que Dental)
     const t0 = process.hrtime.bigint();
+    const doctorsList =
+      (doctors ?? [])
+        .map((d) => `- ${d.displayName}${d.availabilityHours ? ` · horario ${d.availabilityHours}` : ""}`)
+        .join("\n") || "- (sin doctores configurados para este tenant)";
+
     const rendered = await this.prompt.format({
       message: message ?? "",
       recent_window: recent_window ?? "",
       now_iso: now_iso ?? new Date().toISOString(),
       tz: tz ?? "America/El_Salvador",
       policy_summary: policySummary,
+      doctors_list: doctorsList,
     });
     const tRender = process.hrtime.bigint();
 
+    // Prepare tools per request (inject tenant-specific doctors)
+    const tools = createAppointmentsTools({ baseUrl: this.baseUrl }, doctors ?? []);
+    const createTool = tools.find((tool) => tool.name === "appointments_create");
+    const checkTool = tools.find((tool) => tool.name === "appointments_check_availability");
+    const rescheduleTool = tools.find((tool) => tool.name === "appointments_reschedule");
+    const cancelTool = tools.find((tool) => tool.name === "appointments_cancel");
+    if (!createTool || !checkTool || !rescheduleTool || !cancelTool) {
+      throw new Error("Appointments tools not initialized");
+    }
+
     // Invoke directo con el string renderizado
     const tInvokeStart = process.hrtime.bigint();
-    const llmOut: any = await tuned.invoke(rendered);
+    const llmOut: any = await tuned.invoke(rendered, { tools: [checkTool, createTool, rescheduleTool, cancelTool] as any });
     const tInvokeEnd = process.hrtime.bigint();
 
     // Timings
@@ -256,12 +278,13 @@ export class CalendarPromptService {
     // Extraer texto, limpiar fences si el proveedor los agrega
     const raw0 = extractAnyText(llmOut) ?? "";
     const raw = stripJsonFences(raw0);
-    console.log("[llm.output] preview", raw.slice(0, 200));
+    console.log("[llm.output] raw", raw);
 
     // Parse + validación (con rescate si viene ruido)
     let out: CalendarLiteOutput;
     try {
-      const parsed = await parser.parse(raw);
+      const firstJson = extractFirstJsonObject(raw) ?? raw;
+      const parsed = await parser.parse(firstJson);
       const safe = CalendarLiteSchema.safeParse(parsed);
       out = safe.success
         ? safe.data
@@ -273,7 +296,8 @@ export class CalendarPromptService {
       const rescued = rescueJsonSlice(raw0);
       if (rescued) {
         try {
-          const parsed = await parser.parse(rescued);
+          const firstJson = extractFirstJsonObject(rescued) ?? rescued;
+          const parsed = await parser.parse(firstJson);
           const safe = CalendarLiteSchema.parse(parsed);
           console.log("[calendar.decide][rescued]", {
             a_len: safe.a.length,
@@ -281,14 +305,14 @@ export class CalendarPromptService {
           });
           out = safe;
         } catch {
-          console.warn("[calendar.fallback.trigger] Gemini no devolvió JSON puro; se pide repetición.");
+          console.warn("[calendar.fallback.trigger] El modelo no devolvió JSON válido; se pide repetición.");
           out = {
             a: "Perdón, no entendí lo último. ¿Podés repetirlo, por favor? 😊",
             c: 0.5,
           };
         }
       } else {
-        console.warn("[calendar.fallback.trigger] Gemini no devolvió JSON puro; se pide repetición.");
+        console.warn("[calendar.fallback.trigger] El modelo no devolvió JSON válido; se pide repetición.");
         out = {
           a: "Disculpá, no alcancé a entender. ¿Lo podrías repetir, por favor? 😊",
           c: 0.5,
@@ -312,6 +336,9 @@ export class CalendarPromptService {
         args.doctor = policyState.doctorName;
       }
 
+      // Siempre fijamos tenantId desde contexto
+      args.tenantId = tenantId ?? args.tenantId;
+
       if (!args.tenantId) {
         console.warn("[calendar.tool.skip] missing tenantId for tool call", {
           requestedTool: out.tool,
@@ -328,21 +355,41 @@ export class CalendarPromptService {
 
           const tzToUse = tz ?? "America/El_Salvador";
 
+          const resolvedDoctorId = this.resolveDoctorId(args, doctors ?? []);
+          const needsDoctor =
+            out.tool === "appointments_check_availability" ||
+            out.tool === "appointments_create" ||
+            out.tool === "appointments_reschedule" ||
+            out.tool === "appointments_cancel";
+
+          if (needsDoctor) {
+            if (!resolvedDoctorId) {
+              toolMessage = "Necesito que elijas uno de estos doctores: " + (doctors ?? []).map((d) => d.displayName).join(", ");
+              throw new AppointmentsToolError(400, "doctorId is required and must be one of the available doctors");
+            }
+            // Sobrescribir siempre con el ID del catálogo, ignorando lo que venga del modelo
+            args.doctorId = resolvedDoctorId;
+            const match = (doctors ?? []).find((d) => d.doctorId === resolvedDoctorId);
+            if (match?.displayName) {
+              args.doctorName = match.displayName;
+            }
+          }
+
           if (out.tool === "appointments_check_availability") {
             const prepared = this.prepareAvailabilityArgs(args, tzToUse);
-            const result = await this.checkAvailabilityTool.call(prepared);
+            const result = await checkTool.invoke(prepared as any);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else if (out.tool === "appointments_create") {
             const prepared = this.prepareCreateArgs(args, tzToUse);
-            const result = await this.createAppointmentTool.call(prepared);
+            const result = await createTool.invoke(prepared as any);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else if (out.tool === "appointments_reschedule") {
             const prepared = this.prepareRescheduleArgs(args, tzToUse);
-            const result = await this.rescheduleAppointmentTool.call(prepared);
+            const result = await rescheduleTool.invoke(prepared as any);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else if (out.tool === "appointments_cancel") {
             const prepared = this.prepareCancelArgs(args, tzToUse);
-            const result = await this.cancelAppointmentTool.call(prepared);
+            const result = await cancelTool.invoke(prepared as any);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else {
             console.warn("[calendar.tool.skip] unsupported tool", { tool: out.tool });
@@ -437,11 +484,11 @@ export class CalendarPromptService {
       const data = JSON.parse(raw) as Record<string, unknown>;
       const doctor = (data.doctorName as string) ?? this.doctorNameFromId(data.doctorId as string) ?? "el doctor";
       const when = this.formatIsoForUser((data.startIso as string) ?? (data.start as string), tz);
-      const appointmentId = data.appointmentId ? ` (ID ${data.appointmentId})` : "";
+      const appointmentId = data.appointmentId ? " (ID " + data.appointmentId + ")" : "";
       if (when) {
-        return `Perfecto, quedó agendada con ${doctor} el ${when}${appointmentId}. ✅`;
+        return "Perfecto, quedó agendada con " + doctor + " el " + when + appointmentId + ". ✅";
       }
-      return `Perfecto, la cita quedó agendada${appointmentId ? ` (${appointmentId})` : ""} ✅.`;
+      return "Perfecto, la cita quedó agendada" + (appointmentId || "") + " ✅.";
     } catch {
       return "Perfecto, la cita quedó agendada ✅.";
     }
@@ -452,7 +499,7 @@ export class CalendarPromptService {
       const data = JSON.parse(raw) as Record<string, unknown>;
       const when = this.formatIsoForUser((data.startIso as string) ?? (data.newStartIso as string), tz);
       if (when) {
-        return `Listo, moví tu cita a ${when}. ✅`;
+        return "Listo, moví tu cita a " + when + ". ✅";
       }
       return "Listo, la cita se actualizó ✅.";
     } catch {
@@ -468,6 +515,37 @@ export class CalendarPromptService {
     } catch {
       return "Listo, cancelé la cita. Cuando quieras volvemos a agendar.";
     }
+  }
+
+  private resolveDoctorId(args: Record<string, unknown>, doctors: Array<{ doctorId: string; displayName: string }>): string | null {
+    const candidates = [args.doctorName, args.doctor].filter(Boolean) as string[];
+    const slugify = (s: string) =>
+      s
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .trim();
+
+    for (const raw of candidates) {
+      const slug = slugify(raw);
+      // exact match doctorId or displayName
+      const exact = doctors.find(
+        (d) =>
+          slugify(d.doctorId) === slug ||
+          slugify(d.displayName) === slug
+      );
+      if (exact?.doctorId) return exact.doctorId;
+
+      // fallback: unique partial match on displayName
+      const partialMatches = doctors.filter((d) =>
+        slugify(d.displayName).includes(slug)
+      );
+      if (partialMatches.length === 1) {
+        return partialMatches[0].doctorId;
+      }
+    }
+
+    return null;
   }
 
   private prepareAvailabilityArgs(
