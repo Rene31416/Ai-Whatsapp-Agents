@@ -8,13 +8,12 @@
 - `TENANT_GSI_PHONE`: name of the global secondary index that maps Meta `phone_number_id` → tenant (default `PhoneNumberIdIndex`).
 
 ## ChatService Lambda (`src/services/chat.service.ts`)
-- `CHAT_BUFFER_TABLE_NAME`: used by `clearBuffer`.
 - `CHAT_SESSIONS_TABLE_NAME`: user/agent chat history table.
 - `MEMORY_TABLE_NAME`: memory summaries table.
 - `TENANT_TABLE_NAME`, `TENANT_GSI_PHONE`: needed by `TenantRepository` for WhatsApp/Calendar lookups.
-- `GEMINI_SECRET_ARN`, `OPENAI_SECRET_ARN`, `GOOGLE_OAUTH_SECRET_ARN`: LLM/OAuth secrets.
-- `CALENDAR_TOKEN_SECRET_PREFIX`: legacy fallback prefix for Google refresh tokens (still present until we rely solely on `calendarSecretName`).
-- `APPOINTMENTS_API_BASE_URL`: base URL for calling the Appointments API (e.g., `https://.../prod/appointments`).
+- `GEMINI_SECRET_ARN`, `OPENAI_SECRET_ARN`: LLM secrets for the workflow.
+- `APPOINTMENTS_API_BASE_URL`: base URL (no trailing slash) for the deployed Appointments API, e.g. `https://ts0g4u3nu2.execute-api.us-east-1.amazonaws.com/prod/appointments`.
+- `DOCTORS_TABLE_NAME`: Dynamo table with doctors per tenant (PK `TENANT#id`, SK `DOCTOR#id`), loaded to inform the calendar prompt/tools.
 
 ## Appointments Lambda (`src/controller/appointments.controller.ts`)
 - `APPOINTMENTS_TABLE_NAME`: Dynamo table for appointments (PK `PK`, SK `APPT#id`).
@@ -27,10 +26,11 @@
 - Still receive `CHAT_BUFFER_TABLE_NAME`, `CHAT_INGRESS_QUEUE_URL`, `FLUSH_TICKET_QUEUE_URL`, etc. (even though the path is disabled). Updates postponed.
 
 ## Local Dev REPL (`src/devtools/local.ts`)
-- `LOCAL_PHONE_NUMBER_ID`: Meta `phone_number_id` to look up the tenant via Dynamo. Required unless `LOCAL_TENANT_ID` is set.
+- `LOCAL_TENANT_PHONE_NUMBER_ID`: Meta `phone_number_id` to look up the tenant via Dynamo. Required unless `LOCAL_TENANT_ID` is set.
 - `LOCAL_TENANT_ID`: optional override to skip the Dynamo lookup.
 - `LOCAL_USER_ID`: simulated user id (defaults to `local-user` if unset).
 - `LOCAL_DRY_RUN`, `LOCAL_WHATSAPP_*`, `LOCAL_GOOGLE_*`: same knobs as before for dry-run mode.
+- `APPOINTMENTS_API_BASE_URL`: same as prod, but can point to any deployed stage of the Appointments API for local tests.
 - Dynamo table names (must point to real tables for local tests):
   - `MEMORY_TABLE_NAME`
   - `CHAT_SESSIONS_TABLE_NAME`
