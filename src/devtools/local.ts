@@ -123,10 +123,10 @@ async function resolveTenantId(): Promise<string> {
     return explicitTenant;
   }
 
-  const phoneId = process.env.LOCAL_PHONE_NUMBER_ID;
+  const phoneId = process.env.LOCAL_TENANT_PHONE_NUMBER_ID;
   if (!phoneId) {
     throw new Error(
-      "Set LOCAL_PHONE_NUMBER_ID or LOCAL_TENANT_ID before running the local REPL"
+      "Set LOCAL_TENANT_PHONE_NUMBER_ID or LOCAL_TENANT_ID before running the local REPL"
     );
   }
 
