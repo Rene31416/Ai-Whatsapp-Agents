@@ -19,6 +19,7 @@ export class AppointmentsToolError extends Error {
   }
 }
 
+
 export function createAppointmentsTools(config: AppointmentsToolConfig, doctors: DoctorRef[] = []) {
   if (!config?.baseUrl) {
     throw new Error("Appointments base URL is required to initialize tools");
