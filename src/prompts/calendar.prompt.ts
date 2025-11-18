@@ -48,6 +48,7 @@ const CalendarLiteSchema = z.object({
   args: z.record(z.string(), z.any()).optional(),
 });
 
+
 const parser = new JsonOutputParser<CalendarLiteOutput>();
 
 function extractFirstJsonObject(text: string): string | null {
