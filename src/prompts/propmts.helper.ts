@@ -41,3 +41,4 @@ export function hasEightHoursElapsed(sinceIso: string, now: Date = new Date()): 
   const diffMs = now.getTime() - since.getTime();         // negative if since is in the future
   return diffMs >= 4 * 60 * 60 * 1000;                    // 4 hours in ms
 }
+
