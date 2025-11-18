@@ -18,6 +18,7 @@ export interface ContactProfile {
   timezoneHint?: string | null;
 }
 
+
 /**
  * Patch object we merge into MemoryRepository.mergeMemoryDelta().
  * Only fields that appear here will be merged.
