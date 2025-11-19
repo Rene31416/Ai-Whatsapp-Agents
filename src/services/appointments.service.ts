@@ -88,6 +88,13 @@ export class AppointmentsService {
   ) {}
 
   async createAppointment(payload: CreateAppointmentRequest): Promise<AppointmentResponse> {
+    console.log("[AppointmentsService] createAppointment request", {
+      tenantId: payload.tenantId,
+      doctorId: payload.doctorId,
+      startIso: payload.startIso,
+      source: payload.source ?? "whatsapp",
+    });
+
     const { startIso, endIso, durationMinutes } = this.normalizeTiming(payload.startIso, payload.endIso, payload.durationMinutes);
 
     await this.ensureAvailability({
@@ -119,6 +126,13 @@ export class AppointmentsService {
   }
 
   async rescheduleAppointment(payload: RescheduleAppointmentRequest): Promise<AppointmentResponse> {
+    console.log("[AppointmentsService] rescheduleAppointment request", {
+      tenantId: payload.tenantId,
+      appointmentId: payload.appointmentId,
+      doctorId: payload.doctorId ?? payload.newDoctorId,
+      newStartIso: payload.newStartIso,
+    });
+
     const target = await this.resolveAppointment(payload);
 
     const doctorId = payload.newDoctorId ?? payload.doctorId ?? target.doctorId;
@@ -152,6 +166,13 @@ export class AppointmentsService {
   }
 
   async cancelAppointment(payload: CancelAppointmentRequest): Promise<AppointmentResponse> {
+    console.log("[AppointmentsService] cancelAppointment request", {
+      tenantId: payload.tenantId,
+      appointmentId: payload.appointmentId,
+      doctorId: payload.doctorId,
+      startIso: payload.startIso,
+    });
+
     const target = await this.resolveAppointment(payload);
     if (target.status === "cancelled") {
       this.log.warn("appointments.cancel.redundant", {
@@ -166,6 +187,12 @@ export class AppointmentsService {
   }
 
   async getAvailability(payload: AvailabilityRequest): Promise<AvailabilityResponse> {
+    console.log("[AppointmentsService] getAvailability request", {
+      tenantId: payload.tenantId,
+      doctorId: payload.doctorId,
+      dateIso: payload.dateIso,
+    });
+
     const appointments = await this.repo.listDoctorAppointmentsForDay(
       payload.tenantId,
       payload.doctorId,
