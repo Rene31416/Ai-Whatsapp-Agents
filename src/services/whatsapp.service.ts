@@ -33,6 +33,11 @@ export class WhatsappService {
    */
   
   async getSecrets(tenantId: string): Promise<WhatsappSecrets> {
+    console.log("[WhatsappService] Resolving WhatsApp secrets", {
+      tenantId,
+      localDryRun: process.env.LOCAL_DRY_RUN === "true",
+    });
+
     // Local dry-run path: don't talk to AWS SM
     if (process.env.LOCAL_DRY_RUN === "true") {
       const localToken =
@@ -89,6 +94,11 @@ export class WhatsappService {
       );
     }
 
+    console.log("[WhatsappService] Secrets fetched from Secrets Manager", {
+      tenantId,
+      secretIdTail: secretId.slice(-12),
+    });
+
     this.log.info("whatsapp.secrets.fetched", {
       tenantId,
       phoneIdSuffix: secrets.WHATSAPP_PHONE_NUMBER_ID.slice(-6),
@@ -115,6 +125,10 @@ export class WhatsappService {
         len: text.length,
         preview: text.slice(0, 120),
       });
+      console.log("[WhatsappService] LOCAL_DRY_RUN active, skipping WhatsApp API call", {
+        to: toWaId,
+        preview: text.slice(0, 80),
+      });
       return;
     }
 
@@ -136,6 +150,12 @@ export class WhatsappService {
     const response = await axios.post(apiUrl, payload, {
       headers,
       timeout: 15000,
+    });
+
+    console.log("[WhatsappService] WhatsApp API response", {
+      to: toWaId,
+      phoneIdTail: creds.WHATSAPP_PHONE_NUMBER_ID.slice(-6),
+      status: response.status,
     });
 
     this.log.info("whatsapp.sent.ok", {
