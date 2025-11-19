@@ -88,6 +88,10 @@ export class AppointmentsController extends Controller {
 
   @POST("/")
   async create(@body requestBody: any) {
+    console.log("[AppointmentsController] POST /appointments", {
+      bodyKeys: Object.keys(requestBody ?? {}),
+    });
+
     try {
       const payload = createSchema.parse(requestBody);
       const result = await this.service.createAppointment(payload);
@@ -99,6 +103,10 @@ export class AppointmentsController extends Controller {
 
   @PATCH("/")
   async rescheduleWithoutId(@body requestBody: any) {
+    console.log("[AppointmentsController] PATCH /appointments (no id)", {
+      bodyKeys: Object.keys(requestBody ?? {}),
+    });
+
     return this.handleReschedule(undefined, requestBody);
   }
 
@@ -107,11 +115,20 @@ export class AppointmentsController extends Controller {
     @pathParam("appointmentId") appointmentId: string,
     @body requestBody: any
   ) {
+    console.log("[AppointmentsController] PATCH /appointments/{appointmentId}", {
+      appointmentId,
+      bodyKeys: Object.keys(requestBody ?? {}),
+    });
+
     return this.handleReschedule(appointmentId, requestBody);
   }
 
   @DELETE("/")
   async cancelWithoutId(@body requestBody: any) {
+    console.log("[AppointmentsController] DELETE /appointments (no id)", {
+      bodyKeys: Object.keys(requestBody ?? {}),
+    });
+
     return this.handleCancel(undefined, requestBody);
   }
 
@@ -120,6 +137,11 @@ export class AppointmentsController extends Controller {
     @pathParam("appointmentId") appointmentId: string,
     @body requestBody: any
   ) {
+    console.log("[AppointmentsController] DELETE /appointments/{appointmentId}", {
+      appointmentId,
+      bodyKeys: Object.keys(requestBody ?? {}),
+    });
+
     return this.handleCancel(appointmentId, requestBody);
   }
 
@@ -129,6 +151,12 @@ export class AppointmentsController extends Controller {
     @queryParam("doctorId") doctorId: string,
     @queryParam("date") date: string
   ) {
+    console.log("[AppointmentsController] GET /appointments/availability", {
+      tenantId,
+      doctorId,
+      date,
+    });
+
     try {
       const payload = availabilitySchema.parse({ tenantId, doctorId, dateIso: date ?? new Date().toISOString() });
       const result = await this.service.getAvailability(payload);
