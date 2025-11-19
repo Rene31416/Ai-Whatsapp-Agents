@@ -23,6 +23,11 @@ import { DoctorsRepository } from "../services/doctors.repository";
 
 const container = new Container({ defaultScope: "Singleton" });
 
+console.log("[container] Bootstrapping IoC container", {
+  serviceName: process.env.SERVICE_NAME ?? "chat-lambda",
+  nodeEnv: process.env.NODE_ENV ?? "dev",
+});
+
 // Core services / repos
 container.bind(ChatRepository).toSelf();
 container.bind(MemoryRepository).toSelf();
@@ -43,6 +48,22 @@ container.bind(CalendarPromptService).toSelf();
 container.bind(DentalWorkflow).toSelf();
 
 // container.bind(DentalWorkflow).toSelf(); // still constructed manually in ChatService
+
+console.log("[container] Registered bindings", {
+  services: [
+    "ChatRepository",
+    "MemoryRepository",
+    "WhatsappService",
+    "PostOpsService",
+    "TenantRepository",
+    "DoctorsRepository",
+    "AppointmentsRepository",
+    "AppointmentsService",
+    "ChatService",
+  ],
+  controllers: ["WhatsappController", "AppointmentsController"],
+  misc: ["ConsoleLogger", "ContactFactsExtractorService", "CalendarPromptService", "DentalWorkflow"],
+});
 
 // Shared Logger instance
 const logger = new Logger({
