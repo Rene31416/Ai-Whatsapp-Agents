@@ -37,6 +37,12 @@ export const handler = async (event: any) => {
     });
   }
 
+  console.log("[tenant-metadata] Lookup request received", {
+    email,
+    table: tenantTableName,
+    tokenPrefix: tokenSecretPrefix ? "***set***" : "***unset***",
+  });
+
   try {
     const command = new ScanCommand({
       TableName: tenantTableName,
@@ -53,6 +59,7 @@ export const handler = async (event: any) => {
     const items = (result.Items ?? []) as TenantItem[];
 
     if (!items.length) {
+      console.log("[tenant-metadata] No tenants found for email", { email });
       return jsonResponse(404, {
         status: "not_found",
         message: `No tenant metadata for email ${email}`,
@@ -75,6 +82,9 @@ export const handler = async (event: any) => {
     let calendarConnectedAt: string | null = null;
 
     for (const candidate of secretCandidates) {
+      console.log("[tenant-metadata] Checking calendar secret candidate", {
+        candidateTail: candidate.slice(-10),
+      });
       try {
         const secretValue = await secretsClient.send(
           new GetSecretValueCommand({
