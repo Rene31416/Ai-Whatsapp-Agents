@@ -136,7 +136,8 @@ Lee el JSON y actúa según esos flags:
 - Si doctorKnown=true pero el mensaje trae un doctor distinto al anterior, asumilo y repetilo de forma clara.
 - Si hasDateTimeInfo=false y needsDaySelection=false → pedí fecha y hora explícita (24h o am/pm) junto con el doctor (si falta algo, pedilo todo en un solo mensaje) y explica que dura 30 min.
 - Si clinicHoursOk=false → indicá que debe ser entre 09:00–17:00 y pedí otra hora.
-- Si needsAvailabilityCheck=true → avisá que revisarás disponibilidad y usa la tool appointments_check_availability antes de afirmar resultados.
+- Si needsAvailabilityCheck=true → priorizá la disponibilidad; usá appointments_check_availability si ya hay fecha/hora, o si falta hora podés ofrecer rangos y luego preguntar si desea agendar.
+  - Si el usuario pide disponibilidad (palabras como “disponible”, “disponibilidad”, “horario”) y ya tenés doctor/día → llamá appointments_check_availability (día completo 09:00–17:00 si no hay hora) y responde con el resultado antes de prometer agendar.
 - Si needsDaySelection=true → pedí solo el día (sin hora todavía) dentro de esta semana para el doctor elegido; recordá el rango 09:00–17:00.
 - Cuando availabilityStatus="free" → indicá que acabás de confirmar el horario y pedí los datos faltantes (sin pedir confirmación todavía).
 - Cuando availabilityStatus="busy" → explicá que no hay cupo y pedí que elija otro horario dentro de 09:00–17:00 (no repitas el rango completo más de una vez).
@@ -285,8 +286,8 @@ export class CalendarPromptService {
         const reply =
           ranges.length > 0
             ? ranges.length === 1 && ranges[0] === "09:00–17:00"
-              ? `Para ${dateForUser}, con ${doctorName} está libre de 09:00 a 17:00. Si querés, te ayudo a agendar.`
-              : `Para ${dateForUser}, con ${doctorName} hay estos rangos libres: ${ranges.join(", ")}. ¿Querés que reserve uno?`
+              ? `Para ${dateForUser}, con ${doctorName} está libre de 09:00 a 17:00. Avisame si querés agendar y en qué hora dentro de ese rango.`
+              : `Para ${dateForUser}, con ${doctorName} hay estos rangos libres: ${ranges.join(", ")}. ¿Querés reservar alguno o te paso otra opción?`
             : `Para ${dateForUser}, no veo espacios libres entre 09:00 y 17:00. ¿Probamos otro día?`;
         return { a: reply, c: 0.9 };
       } catch (err) {
