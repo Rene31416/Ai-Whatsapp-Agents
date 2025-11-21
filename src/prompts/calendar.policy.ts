@@ -1,5 +1,6 @@
 export type CalendarPolicyState = {
   doctorKnown: boolean;
+  doctorId?: string;
   doctorName?: string;
   hasDateTimeInfo: boolean;
   timePhrase?: string;
@@ -9,10 +10,9 @@ export type CalendarPolicyState = {
   needsAvailabilityCheck: boolean;
   needsContactData: boolean;
   needsConfirmation: boolean;
+  needsDaySelection: boolean;
 };
 
-const doctorRegexSingle = /\b(?:dr\.?|doctor|doctora)?\s*(ger[ae]r?do|amada)\b/i;
-const doctorRegexGlobal = /\b(?:dr\.?|doctor|doctora)?\s*(ger[ae]r?do|amada)\b/gi;
 const emailRegex = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
 const phoneRegex = /\b\d{7,}\b/;
 const nameRegex = /(mi\s+nombre|nombre\s+completo|soy|me\s+llamo|se\s+llama)/i;
@@ -25,15 +25,20 @@ const timeRegex24h = /\b([01]?\d|2[0-3]):([0-5]\d)\b/g;
 export function analyzeCalendarConversation(input: {
   recentWindow?: string;
   message?: string;
+  doctors?: Array<{ doctorId: string; displayName: string }>;
 }): CalendarPolicyState {
   const recentWindow = input.recentWindow ?? "";
   const message = input.message ?? "";
-  const fullText = `${recentWindow}\n${message}`;
+  const doctors = input.doctors ?? [];
+  const userWindow = extractUserLines(recentWindow);
+  const fullText = `${userWindow}\n${message}`;
 
-  const doctorName = detectDoctorName(message, recentWindow);
+  const doctorMatch = detectDoctorFromCatalog(message, userWindow, doctors);
+  const doctorName = doctorMatch?.doctorName;
+  const doctorId = doctorMatch?.doctorId;
 
   const messageTimeInfo = extractTimeInfo(message);
-  const windowTimeInfo = extractTimeInfo(recentWindow);
+  const windowTimeInfo = extractTimeInfo(userWindow);
   const timeInfo = messageTimeInfo ?? windowTimeInfo;
 
   const clinicHoursOk = timeInfo?.hour24 != null ? isWithinClinicHours(timeInfo.hour24) : true;
@@ -49,17 +54,21 @@ export function analyzeCalendarConversation(input: {
 
   let availabilityStatus = detectAvailability(fullText);
   const userAskingAvailability = availabilityQuestionRegex.test(message);
+  const availabilityInquiry = /disponible|disponibilidad|horarios?/i.test(message);
 
   const doctorKnown = !!doctorName;
   const hasDateTimeInfo = !!timeInfo;
 
-  const mentionsNewRequest = !!messageTimeInfo || !!message.match(doctorRegexSingle);
+  const mentionsNewRequest = !!messageTimeInfo || !!doctorMatch;
   if (mentionsNewRequest || userAskingAvailability) {
     availabilityStatus = "unknown";
   }
 
   const needsAvailabilityCheck =
     doctorKnown && hasDateTimeInfo && clinicHoursOk && availabilityStatus === "unknown";
+
+  const needsDaySelection =
+    doctorKnown && !hasDateTimeInfo && availabilityInquiry;
 
   const needsContactData =
     missingFields.length > 0 && doctorKnown && hasDateTimeInfo && clinicHoursOk;
@@ -73,6 +82,7 @@ export function analyzeCalendarConversation(input: {
 
   return {
     doctorKnown,
+    doctorId,
     doctorName,
     hasDateTimeInfo,
     timePhrase: timeInfo?.phrase,
@@ -82,6 +92,7 @@ export function analyzeCalendarConversation(input: {
     needsAvailabilityCheck,
     needsContactData,
     needsConfirmation,
+    needsDaySelection,
   };
 }
 
@@ -95,22 +106,48 @@ function detectAvailability(text: string): "free" | "busy" | "unknown" {
   return "unknown";
 }
 
-function detectDoctorName(message: string, recentWindow: string): string | undefined {
-  const currentMatch = message.match(doctorRegexSingle);
-  if (currentMatch) {
-    return normalizeDoctor(currentMatch[1]);
-  }
-  doctorRegexGlobal.lastIndex = 0;
-  const allMatches = Array.from(recentWindow.matchAll(doctorRegexGlobal));
-  if (allMatches.length === 0) return undefined;
-  const lastMatch = allMatches[allMatches.length - 1];
-  return normalizeDoctor(lastMatch[1]);
+function extractUserLines(windowText: string): string {
+  if (!windowText) return "";
+  const lines = windowText.split(/\r?\n/);
+  const userLines = lines
+    .map((line) => line.trim())
+    .filter((line) => /^U:?/i.test(line) || /^User:/i.test(line))
+    .map((line) => line.replace(/^U:\s*/i, "").replace(/^User:\s*/i, "").trim());
+  return userLines.join("\n");
 }
 
-function normalizeDoctor(value: string): string {
-  const lower = value.toLowerCase();
-  if (lower.includes("ger")) return "Gerardo";
-  return "Amada";
+function detectDoctorFromCatalog(
+  message: string,
+  recentWindow: string,
+  doctors: Array<{ doctorId: string; displayName: string }>
+): { doctorId: string; doctorName: string } | undefined {
+  const text = `${recentWindow}\n${message}`.toLowerCase();
+  const slug = (s: string) =>
+    s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+
+  for (const doctor of doctors) {
+    const nameSlug = slug(doctor.displayName);
+    const idSlug = slug(doctor.doctorId);
+    if (!nameSlug && !idSlug) continue;
+
+    if (nameSlug && text.includes(nameSlug)) {
+      return { doctorId: doctor.doctorId, doctorName: doctor.displayName };
+    }
+    if (idSlug && text.includes(idSlug)) {
+      return { doctorId: doctor.doctorId, doctorName: doctor.displayName };
+    }
+
+    const parts = nameSlug.split(/\s+/).filter(Boolean);
+    if (parts.some((p) => p.length >= 3 && text.includes(p))) {
+      return { doctorId: doctor.doctorId, doctorName: doctor.displayName };
+    }
+  }
+
+  return undefined;
 }
 
 function extractTimeInfo(text: string): { phrase: string; hour24?: number } | null {

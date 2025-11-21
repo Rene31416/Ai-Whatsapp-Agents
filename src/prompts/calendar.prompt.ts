@@ -40,6 +40,7 @@ const TOOL_NAMES = [
   "appointments_cancel",
 ] as const;
 type ToolName = (typeof TOOL_NAMES)[number];
+type DoctorRef = { doctorId: string; displayName: string; availabilityHours?: string };
 
 const CalendarLiteSchema = z.object({
   a: z.string().default(""),
@@ -133,9 +134,10 @@ POLÍTICAS CALCULADAS (JSON):
 Lee el JSON y actúa según esos flags:
 - Si doctorKnown=false → pedí que elija uno de los DOCTORES DISPONIBLES.
 - Si doctorKnown=true pero el mensaje trae un doctor distinto al anterior, asumilo y repetilo de forma clara.
-- Si hasDateTimeInfo=false → pedí fecha y hora explícita (24h o am/pm) junto con el doctor (si falta algo, pedilo todo en un solo mensaje) y explica que dura 30 min.
+- Si hasDateTimeInfo=false y needsDaySelection=false → pedí fecha y hora explícita (24h o am/pm) junto con el doctor (si falta algo, pedilo todo en un solo mensaje) y explica que dura 30 min.
 - Si clinicHoursOk=false → indicá que debe ser entre 09:00–17:00 y pedí otra hora.
 - Si needsAvailabilityCheck=true → avisá que revisarás disponibilidad y usa la tool appointments_check_availability antes de afirmar resultados.
+- Si needsDaySelection=true → pedí solo el día (sin hora todavía) dentro de esta semana para el doctor elegido; recordá el rango 09:00–17:00.
 - Cuando availabilityStatus="free" → indicá que acabás de confirmar el horario y pedí los datos faltantes (sin pedir confirmación todavía).
 - Cuando availabilityStatus="busy" → explicá que no hay cupo y pedí que elija otro horario dentro de 09:00–17:00 (no repitas el rango completo más de una vez).
 - Si needsContactData=true → pedí en un solo mensaje exactamente los campos listados en missingFields (nombre, telefono, correo) sin repetir otros.
@@ -217,6 +219,7 @@ export class CalendarPromptService {
     const policyState = analyzeCalendarConversation({
       message: message ?? "",
       recentWindow: recent_window ?? "",
+      doctors: doctors ?? [],
     });
     const policySummary = buildPolicySummary(policyState);
     console.log("[calendar.policy]", {
@@ -259,6 +262,36 @@ export class CalendarPromptService {
     const cancelTool = tools.find((tool) => tool.name === "appointments_cancel");
     if (!createTool || !checkTool || !rescheduleTool || !cancelTool) {
       throw new Error("Appointments tools not initialized");
+    }
+
+    // Fast-path: disponibilidad sin hora → sugerir horarios libres del día
+    const weekday = this.detectWeekday(`${message ?? ""} ${recent_window ?? ""}`);
+    if (policyState.needsDaySelection && weekday !== null && doctors && doctors.length > 0 && tenantId) {
+      const doctorIdResolved = this.resolveDoctorId({ doctor: policyState.doctorName }, doctors) ?? doctors[0].doctorId;
+      const dayRange = this.buildDayRange(weekday, now_iso ?? new Date().toISOString(), tz ?? "America/El_Salvador");
+      try {
+        const availabilityArgs = {
+          tenantId: tenantId,
+          doctorId: doctorIdResolved,
+          startIso: dayRange.startIso,
+          endIso: dayRange.endIso,
+        };
+        const toolResult = await checkTool.invoke(availabilityArgs as any);
+        const busyRaw = typeof toolResult === "string" ? toolResult : JSON.stringify(toolResult);
+        const ranges = this.buildFreeRangesFromBusy(busyRaw, dayRange.startIso, dayRange.endIso, tz ?? "America/El_Salvador");
+        const doctorName = policyState.doctorName || doctors.find((d) => d.doctorId === doctorIdResolved)?.displayName || "el doctor";
+        const dateForUser = this.formatWeekdayForUser(dayRange.startIso, tz ?? "America/El_Salvador");
+
+        const reply =
+          ranges.length > 0
+            ? ranges.length === 1 && ranges[0] === "09:00–17:00"
+              ? `Para ${dateForUser}, con ${doctorName} está libre de 09:00 a 17:00. Si querés, te ayudo a agendar.`
+              : `Para ${dateForUser}, con ${doctorName} hay estos rangos libres: ${ranges.join(", ")}. ¿Querés que reserve uno?`
+            : `Para ${dateForUser}, no veo espacios libres entre 09:00 y 17:00. ¿Probamos otro día?`;
+        return { a: reply, c: 0.9 };
+      } catch (err) {
+        console.warn("[calendar.availability.suggestion.error]", err);
+      }
     }
 
     // Invoke directo con el string renderizado
@@ -330,7 +363,7 @@ export class CalendarPromptService {
       if (tenantId) {
         args.tenantId = tenantId;
       }
-      if (userId && !args.userId) {
+      if (userId) {
         args.userId = userId;
       }
       if (!args.doctor && policyState.doctorName) {
@@ -377,19 +410,19 @@ export class CalendarPromptService {
           }
 
           if (out.tool === "appointments_check_availability") {
-            const prepared = this.prepareAvailabilityArgs(args, tzToUse);
+            const prepared = this.prepareAvailabilityArgs(args, tzToUse, doctors ?? []);
             const result = await checkTool.invoke(prepared as any);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else if (out.tool === "appointments_create") {
-            const prepared = this.prepareCreateArgs(args, tzToUse);
+            const prepared = this.prepareCreateArgs(args, tzToUse, doctors ?? []);
             const result = await createTool.invoke(prepared as any);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else if (out.tool === "appointments_reschedule") {
-            const prepared = this.prepareRescheduleArgs(args, tzToUse);
+            const prepared = this.prepareRescheduleArgs(args, tzToUse, doctors ?? []);
             const result = await rescheduleTool.invoke(prepared as any);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else if (out.tool === "appointments_cancel") {
-            const prepared = this.prepareCancelArgs(args, tzToUse);
+            const prepared = this.prepareCancelArgs(args, tzToUse, doctors ?? []);
             const result = await cancelTool.invoke(prepared as any);
             toolMessage = typeof result === "string" ? result : JSON.stringify(result);
           } else {
@@ -444,7 +477,7 @@ export class CalendarPromptService {
         const msg = this.buildAvailabilityMessage(toolMessage, missingCount);
         if (msg) out.a = msg;
       } else if (out.tool === "appointments_create") {
-        out.a = this.buildCreateConfirmationMessage(toolMessage, tz ?? "America/El_Salvador");
+        out.a = this.buildCreateConfirmationMessage(toolMessage, tz ?? "America/El_Salvador", doctors ?? []);
         console.log("[calendar.tool.create.result]", toolMessage.slice(0, 200));
       } else if (out.tool === "appointments_reschedule") {
         out.a = this.buildRescheduleMessage(toolMessage, tz ?? "America/El_Salvador");
@@ -480,10 +513,13 @@ export class CalendarPromptService {
     }
   }
 
-  private buildCreateConfirmationMessage(raw: string, tz: string): string {
+  private buildCreateConfirmationMessage(raw: string, tz: string, doctors: DoctorRef[]): string {
     try {
       const data = JSON.parse(raw) as Record<string, unknown>;
-      const doctor = (data.doctorName as string) ?? this.doctorNameFromId(data.doctorId as string) ?? "el doctor";
+      const doctor =
+        (data.doctorName as string) ??
+        this.doctorNameFromId(data.doctorId as string, doctors) ??
+        "el doctor";
       const when = this.formatIsoForUser((data.startIso as string) ?? (data.start as string), tz);
       const appointmentId = data.appointmentId ? " (ID " + data.appointmentId + ")" : "";
       if (when) {
@@ -518,32 +554,12 @@ export class CalendarPromptService {
     }
   }
 
-  private resolveDoctorId(args: Record<string, unknown>, doctors: Array<{ doctorId: string; displayName: string }>): string | null {
-    const candidates = [args.doctorName, args.doctor].filter(Boolean) as string[];
-    const slugify = (s: string) =>
-      s
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .trim();
+  private resolveDoctorId(args: Record<string, unknown>, doctors: DoctorRef[]): string | null {
+    const candidates = [args.doctorId, args.doctorName, args.doctor].filter(Boolean) as string[];
 
     for (const raw of candidates) {
-      const slug = slugify(raw);
-      // exact match doctorId or displayName
-      const exact = doctors.find(
-        (d) =>
-          slugify(d.doctorId) === slug ||
-          slugify(d.displayName) === slug
-      );
-      if (exact?.doctorId) return exact.doctorId;
-
-      // fallback: unique partial match on displayName
-      const partialMatches = doctors.filter((d) =>
-        slugify(d.displayName).includes(slug)
-      );
-      if (partialMatches.length === 1) {
-        return partialMatches[0].doctorId;
-      }
+      const match = this.findDoctor(raw, doctors);
+      if (match) return match.doctorId;
     }
 
     return null;
@@ -551,7 +567,8 @@ export class CalendarPromptService {
 
   private prepareAvailabilityArgs(
     args: Record<string, unknown>,
-    tz: string
+    tz: string,
+    doctors: DoctorRef[]
   ): Record<string, unknown> {
     const prepared: Record<string, unknown> = { ...args };
 
@@ -593,7 +610,7 @@ export class CalendarPromptService {
       prepared.endIso = this.addMinutes(prepared.startIso, 30);
     }
 
-    const doctor = this.resolveDoctorInfo(prepared);
+    const doctor = this.resolveDoctorInfo(prepared, doctors);
     if (!doctor.doctorId) {
       throw new Error("doctorId is required for availability checks");
     }
@@ -608,7 +625,8 @@ export class CalendarPromptService {
 
   private prepareCreateArgs(
     args: Record<string, unknown>,
-    tz: string
+    tz: string,
+    doctors: DoctorRef[]
   ): Record<string, unknown> {
     const prepared: Record<string, unknown> = { ...args };
 
@@ -641,7 +659,7 @@ export class CalendarPromptService {
       throw new Error("userId is required for appointment creation");
     }
 
-    const doctor = this.resolveDoctorInfo(prepared);
+    const doctor = this.resolveDoctorInfo(prepared, doctors);
     if (!doctor.doctorId) {
       throw new Error("doctorId is required for appointment creation");
     }
@@ -667,7 +685,8 @@ export class CalendarPromptService {
 
   private prepareRescheduleArgs(
     args: Record<string, unknown>,
-    tz: string
+    tz: string,
+    doctors: DoctorRef[]
   ): Record<string, unknown> {
     const prepared: Record<string, unknown> = { ...args };
 
@@ -712,7 +731,7 @@ export class CalendarPromptService {
       );
     }
 
-    const doctor = this.resolveDoctorInfo(prepared, {
+    const doctor = this.resolveDoctorInfo(prepared, doctors, {
       idKeys: ["newDoctorId", "doctorId", "doctor"],
       nameKeys: ["newDoctorName", "doctorName", "doctor"],
     });
@@ -737,7 +756,8 @@ export class CalendarPromptService {
 
   private prepareCancelArgs(
     args: Record<string, unknown>,
-    tz: string
+    tz: string,
+    doctors: DoctorRef[]
   ): Record<string, unknown> {
     const prepared: Record<string, unknown> = { ...args };
 
@@ -759,7 +779,7 @@ export class CalendarPromptService {
       }
     }
 
-    const doctor = this.resolveDoctorInfo(prepared);
+    const doctor = this.resolveDoctorInfo(prepared, doctors);
 
     return {
       tenantId: prepared.tenantId,
@@ -829,6 +849,7 @@ export class CalendarPromptService {
 
   private resolveDoctorInfo(
     args: Record<string, unknown>,
+    doctors: DoctorRef[],
     opts?: { idKeys?: string[]; nameKeys?: string[] }
   ): { doctorId?: string; doctorName?: string } {
     const idKeys = opts?.idKeys ?? ["doctorId", "doctor"];
@@ -836,40 +857,197 @@ export class CalendarPromptService {
 
     for (const key of idKeys) {
       const value = this.pickString(args, [key]);
-      const normalized = this.normalizeDoctorId(value);
-      if (normalized) {
-        return { doctorId: normalized, doctorName: this.doctorNameFromId(normalized) };
+      const match = this.findDoctor(value, doctors);
+      if (match) {
+        return { doctorId: match.doctorId, doctorName: match.displayName };
+      }
+      if (value) {
+        const normalized = this.slugify(value);
+        return { doctorId: normalized || value, doctorName: value };
       }
     }
 
     for (const key of nameKeys) {
       const value = this.pickString(args, [key]);
-      const normalized = this.normalizeDoctorId(value);
-      if (normalized) {
-        return { doctorId: normalized, doctorName: this.doctorNameFromId(normalized) };
+      const match = this.findDoctor(value, doctors);
+      if (match) {
+        return { doctorId: match.doctorId, doctorName: match.displayName };
       }
       if (value) {
-        return { doctorId: value.toLowerCase(), doctorName: value };
+        const normalized = this.slugify(value);
+        return { doctorId: normalized || value, doctorName: value };
       }
     }
 
     return {};
   }
 
-  private doctorNameFromId(id?: string): string | undefined {
+  private findDoctor(raw: string | undefined, doctors: DoctorRef[]): DoctorRef | null {
+    if (!raw) return null;
+    const target = this.slugify(raw);
+    if (!target) return null;
+
+    for (const doc of doctors) {
+      const idSlug = this.slugify(doc.doctorId);
+      const nameSlug = this.slugify(doc.displayName);
+      if (idSlug === target || nameSlug === target) return doc;
+      if (nameSlug.includes(target) || target.includes(nameSlug)) return doc;
+
+      const parts = nameSlug.split(/\s+/).filter(Boolean);
+      if (parts.some((p) => p.length >= 3 && target.includes(p))) {
+        return doc;
+      }
+    }
+
+    return null;
+  }
+
+  private doctorNameFromId(id: string | undefined, doctors: DoctorRef[]): string | undefined {
     if (!id) return undefined;
-    if (id === "gerardo") return "Gerardo";
-    if (id === "amada") return "Amada";
+    const match = doctors.find((d) => this.slugify(d.doctorId) === this.slugify(id));
+    if (match) return match.displayName;
     return id.replace(/-/g, " ");
   }
 
-  private normalizeDoctorId(value?: string | null): string | null {
-    if (!value) return null;
-    const clean = value.toString().trim().toLowerCase();
-    if (!clean) return null;
-    if (clean.includes("ama")) return "amada";
-    if (clean.includes("ger")) return "gerardo";
-    return clean.replace(/\s+/g, "-");
+  private slugify(value?: string | null): string {
+    if (!value) return "";
+    return value
+      .toString()
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .trim();
+  }
+
+  private detectWeekday(text: string): number | null {
+    const map: Record<string, number> = {
+      lunes: 1,
+      martes: 2,
+      miercoles: 3,
+      miércoles: 3,
+      jueves: 4,
+      viernes: 5,
+      sabado: 6,
+      sábado: 6,
+      domingo: 0,
+    };
+    const lower = text.toLowerCase();
+    for (const key of Object.keys(map)) {
+      if (lower.includes(key)) return map[key];
+    }
+    return null;
+  }
+
+  private buildDayRange(
+    weekday: number,
+    nowIso: string,
+    tz: string
+  ): { startIso: string; endIso: string } {
+    const now = new Date(nowIso);
+    const currentDay = now.getUTCDay();
+    const daysAhead = (weekday - currentDay + 7) % 7 || 7;
+    const target = new Date(now.getTime() + daysAhead * 24 * 60 * 60 * 1000);
+    const offset = this.getTzOffset(tz);
+    const dateStr = target.toISOString().slice(0, 10);
+    const startIso = `${dateStr}T09:00:00${offset}`;
+    const endIso = `${dateStr}T17:00:00${offset}`;
+    return { startIso, endIso };
+  }
+
+  private buildFreeRangesFromBusy(
+    busyRaw: string,
+    startOfDayIso: string,
+    endOfDayIso: string,
+    tz: string
+  ): string[] {
+    try {
+      const parsed = JSON.parse(busyRaw) as { busy?: Array<{ startIso?: string; endIso?: string }> };
+      const busy = Array.isArray(parsed.busy) ? parsed.busy : [];
+      const intervals = busy
+        .map((b) => ({
+          start: new Date(b.startIso ?? "").getTime(),
+          end: new Date(b.endIso ?? "").getTime(),
+        }))
+        .filter((b) => !Number.isNaN(b.start) && !Number.isNaN(b.end))
+        .sort((a, b) => a.start - b.start);
+
+      const dayStart = new Date(startOfDayIso).getTime();
+      const dayEnd = new Date(endOfDayIso).getTime();
+      if (Number.isNaN(dayStart) || Number.isNaN(dayEnd)) return [];
+
+      const freeRanges: Array<{ start: number; end: number }> = [];
+      let cursor = dayStart;
+      for (const iv of intervals) {
+        if (iv.start > cursor) {
+          freeRanges.push({ start: cursor, end: Math.min(iv.start, dayEnd) });
+        }
+        cursor = Math.max(cursor, iv.end);
+        if (cursor >= dayEnd) break;
+      }
+      if (cursor < dayEnd) {
+        freeRanges.push({ start: cursor, end: dayEnd });
+      }
+
+      const formatted = freeRanges
+        .filter((r) => r.end - r.start >= 15 * 60 * 1000)
+        .slice(0, 4)
+        .map((r) => {
+          const startIso = new Date(r.start).toISOString();
+          const endIso = new Date(r.end).toISOString();
+          const startTime = this.formatTimeForUser(startIso, tz);
+          const endTime = this.formatTimeForUser(endIso, tz);
+          return `${startTime}–${endTime}`;
+        });
+
+      return formatted;
+    } catch {
+      return [];
+    }
+  }
+
+  private formatDateForUser(iso: string, tz: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso.slice(0, 10);
+    try {
+      return date.toLocaleDateString("es-SV", {
+        timeZone: tz,
+        weekday: "long",
+        day: "2-digit",
+        month: "2-digit",
+      });
+    } catch {
+      return iso.slice(0, 10);
+    }
+  }
+
+  private formatWeekdayForUser(iso: string, tz: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return "ese día";
+    try {
+      return date.toLocaleDateString("es-SV", {
+        timeZone: tz,
+        weekday: "long",
+        day: "2-digit",
+        month: "2-digit",
+      });
+    } catch {
+      return "ese día";
+    }
+  }
+
+  private formatTimeForUser(iso: string, tz: string): string {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) return iso.slice(11, 16);
+    try {
+      return date.toLocaleTimeString("es-SV", {
+        timeZone: tz,
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      });
+    } catch {
+      return iso.slice(11, 16);
+    }
   }
 
   private pickString(args: Record<string, unknown>, keys: string[]): string | undefined {
