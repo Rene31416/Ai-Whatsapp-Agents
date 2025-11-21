@@ -30,15 +30,14 @@ export function analyzeCalendarConversation(input: {
   const recentWindow = input.recentWindow ?? "";
   const message = input.message ?? "";
   const doctors = input.doctors ?? [];
-  const userWindow = extractUserLines(recentWindow);
-  const fullText = `${userWindow}\n${message}`;
+  const fullText = `${recentWindow}\n${message}`;
 
-  const doctorMatch = detectDoctorFromCatalog(message, userWindow, doctors);
+  const doctorMatch = detectDoctorFromCatalog(message, recentWindow, doctors);
   const doctorName = doctorMatch?.doctorName;
   const doctorId = doctorMatch?.doctorId;
 
   const messageTimeInfo = extractTimeInfo(message);
-  const windowTimeInfo = extractTimeInfo(userWindow);
+  const windowTimeInfo = extractTimeInfo(recentWindow);
   const timeInfo = messageTimeInfo ?? windowTimeInfo;
 
   const clinicHoursOk = timeInfo?.hour24 != null ? isWithinClinicHours(timeInfo.hour24) : true;
@@ -59,13 +58,13 @@ export function analyzeCalendarConversation(input: {
   const doctorKnown = !!doctorName;
   const hasDateTimeInfo = !!timeInfo;
 
-  const mentionsNewRequest = !!messageTimeInfo || !!doctorMatch;
+  const mentionsNewRequest = !!messageTimeInfo || !!doctorMatch || !!availabilityInquiry;
   if (mentionsNewRequest || userAskingAvailability) {
     availabilityStatus = "unknown";
   }
 
   const needsAvailabilityCheck =
-    doctorKnown && hasDateTimeInfo && clinicHoursOk && availabilityStatus === "unknown";
+    doctorKnown && hasDateTimeInfo && clinicHoursOk;
 
   const needsDaySelection =
     doctorKnown && !hasDateTimeInfo && availabilityInquiry;
