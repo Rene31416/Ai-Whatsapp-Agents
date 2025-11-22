@@ -80,7 +80,7 @@ async function runTurn(inputText: string): Promise<void> {
   const trimmed = (inputText ?? "").trim();
   if (!trimmed) return;
 
-  console.log("\n──────────────────────────────────────");
+
   console.log("👤 You :", trimmed);
 
   const event = makeFakeSqsEvent(TENANT_ID, USER_ID, trimmed);
