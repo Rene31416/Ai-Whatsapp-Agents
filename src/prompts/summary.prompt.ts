@@ -31,9 +31,6 @@ function startTimer(label: string) {
   };
 }
 
-/**
- * Summarize last turns into 1–3 plain-text sentences (<= limitChars).
- */
 export async function summarizeRecentDialog(input: {
   last10: Array<{ role: "user" | "agent"; message: string }>;
   limitChars?: number;
