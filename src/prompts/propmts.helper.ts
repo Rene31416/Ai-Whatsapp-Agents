@@ -1,4 +1,4 @@
-// src/chat/prompt.helpers.ts
+
 import { MemoryObject } from "../chat/memory.repository";
 
 export function buildFactsHeader(mem: MemoryObject | undefined, greetOk: boolean): string {
