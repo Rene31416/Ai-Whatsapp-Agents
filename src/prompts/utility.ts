@@ -74,8 +74,5 @@ async function callZodStructuredParser() {
   });
 }
 
-// const response = await callStringOutputParser();
-// const response = await callListOutputParser();
-// const response = await callStructuredParser();
 const response = await callZodStructuredParser();
 console.log(response);
