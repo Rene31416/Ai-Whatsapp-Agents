@@ -35,19 +35,6 @@ const CompactSchema = z.object({
   c: z.number().min(0).max(1), // confidence in ii
   isCalendar: z.boolean(),
 
-  // appt: z.object({
-  //   procedure: z.string().min(1).max(100).nullable(),
-  //   needsDoctorReview: z.boolean().nullable(),
-  //   patientName: z.string().min(1).max(120).nullable(),
-  //   phone: z.string().min(1).max(40).nullable(),
-  //   apptAt: z.string().min(1).max(80).nullable(), // UTC timestamp string if user gave a clear date+hora
-  //   notes: z.string().min(1).max(200).nullable(),
-  // }),
-
-  // readyToSchedule: z.boolean(), // true ONLY if:
-  // intent === "schedule",
-  // appt.needsDoctorReview === false,
-  // appt.patientName, appt.phone, appt.apptAt are all non-null
 });
 type Compact = z.infer<typeof CompactSchema>;
 
