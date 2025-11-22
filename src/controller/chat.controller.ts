@@ -90,7 +90,6 @@ export class WhatsappController extends Controller {
         },
       };
 
-      // Log payload preview for future metadata tweaks
       console.log("📦 FIFO payload preview:", {
         tenantId: payload.tenantId,
         userId: payload.userId,
