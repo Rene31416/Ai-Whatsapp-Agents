@@ -14,6 +14,7 @@ const app = new ApiLambdaApp(controllersPath, appConfig, false, container);
 
 // 🧠 3. Local interactive test session
 async function main() {
+  console.log("[main.random.boot]", Math.random());
   console.log("🚀 Starting local Chat API (ts-lambda-api)...");
   console.log("Type messages to simulate POST /chat requests.\n");
 
