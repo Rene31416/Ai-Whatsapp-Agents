@@ -80,6 +80,7 @@ async function runTurn(inputText: string): Promise<void> {
   const trimmed = (inputText ?? "").trim();
   if (!trimmed) return;
 
+  console.log("[local.repl.random]", Math.random());
 
   console.log("👤 You :", trimmed);
 
