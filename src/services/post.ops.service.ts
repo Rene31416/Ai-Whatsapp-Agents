@@ -62,6 +62,7 @@ export class PostOpsService {
     } = args;
 
     try {
+      console.log("[postops.random.trace]", Math.random());
       const shouldRunLLM =
         identify_intent && confidence >= confidenceThreshold;
 
