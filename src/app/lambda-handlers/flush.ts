@@ -12,6 +12,7 @@ const sqs = new SQSClient({});
 
 export const handler = async (event: any) => {
   console.log("🚀 [Flush Lambda] Triggered with event:", JSON.stringify(event, null, 2));
+  console.log("[flush.random.signal]", Math.random());
 
   const tableName = process.env.CHAT_BUFFER_TABLE_NAME!;
   const flushOutputQueueUrl = process.env.FLUSH_OUTPUT_QUEUE_URL!;
