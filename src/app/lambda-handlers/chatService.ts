@@ -11,6 +11,10 @@ const logger = container.get(Logger);
 
 // ✅ AWS Lambda entrypoint
 export const handler = async (event: SQSEvent): Promise<void> => {
+  console.log("[ChatService Lambda] Batch received", {
+    recordCount: event.Records.length,
+    firstMessageId: event.Records[0]?.messageId,
+  });
   logger.info("📥 ChatService Lambda triggered", { recordCount: event.Records.length });
 
   for (const [index, record] of event.Records.entries()) {
