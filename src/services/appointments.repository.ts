@@ -199,7 +199,14 @@ export class AppointmentsRepository {
       })
     );
 
-    return (res.Items ?? []) as AppointmentRecord[];
+    const items = (res.Items ?? []) as AppointmentRecord[];
+    console.log("[AppointmentsRepository] Loaded doctor day view", {
+      tenantId,
+      doctorId,
+      dayIso,
+      count: items.length,
+    });
+    return items;
   }
 
   async listTenantAppointmentsByStatus(
