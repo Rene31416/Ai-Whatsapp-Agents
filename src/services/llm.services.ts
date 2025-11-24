@@ -81,8 +81,10 @@ export async function getLLM(): Promise<any> {
       );
     }
     const apiKey = await getOpenAIApiKey();
+    const model = process.env.OPENAI_MODEL || "gpt-4.1-mini";
+    console.log("[LLM] Initializing OpenAI client", { model });
     llmInstance = new ChatOpenAICtor({
-      model: process.env.OPENAI_MODEL || "gpt-4.1-mini",
+      model,
       apiKey,
       temperature: 0.3,
     }) as any;
@@ -90,8 +92,10 @@ export async function getLLM(): Promise<any> {
     return llmInstance as any;
   }
   const apiKey = await getGeminiApiKey();
+  const model = process.env.GEMINI_MODEL || "gemini-2.5-flash-lite";
+  console.log("[LLM] Initializing Gemini client", { model });
   llmInstance = new ChatGoogleGenerativeAI({
-    model: process.env.GEMINI_MODEL || "gemini-2.5-flash-lite",
+    model,
     apiKey,
   });
   return llmInstance;
