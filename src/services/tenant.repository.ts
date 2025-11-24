@@ -40,7 +40,13 @@ export class TenantRepository {
       return null;
     }
 
-    return this.mapItem(result.Item);
+    const mapped = this.mapItem(result.Item);
+    console.log("[TenantRepository] Loaded tenant by id", {
+      tenantId: mapped.tenantId,
+      phoneNumberIds: mapped.phoneNumberIds?.length ?? 0,
+      users: mapped.users?.length ?? 0,
+    });
+    return mapped;
   }
 
   async getByPhoneNumberId(phoneNumberId: string): Promise<TenantMetadata | null> {
@@ -67,7 +73,13 @@ export class TenantRepository {
       return null;
     }
 
-    return this.mapItem(item);
+    const mapped = this.mapItem(item);
+    console.log("[TenantRepository] Resolved tenant by phone number", {
+      phoneNumberId,
+      tenantId: mapped.tenantId,
+      whatsappPhones: mapped.whatsappPhones?.length ?? 0,
+    });
+    return mapped;
   }
 
   private mapItem(item: Record<string, AttributeValue>): TenantMetadata {
@@ -95,4 +107,3 @@ export class TenantRepository {
     );
   }
 }
-
