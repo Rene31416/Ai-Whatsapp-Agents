@@ -97,6 +97,14 @@ export class GoogleCalendarService {
         end: slot.end,
       })) ?? [];
 
+    console.log("[GoogleCalendarService] Free/busy lookup complete", {
+      tenantId: params.tenantId,
+      calendarId,
+      startIso: params.startIso,
+      endIso: params.endIso,
+      busyCount: busy.length,
+    });
+
     return {
       busy,
       isFree: busy.length === 0,
