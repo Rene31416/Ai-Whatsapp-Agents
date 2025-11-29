@@ -140,7 +140,13 @@ export class AppointmentsRepository {
       })
     );
 
-    return res.Item ? (res.Item as AppointmentRecord) : null;
+    const found = res.Item ? (res.Item as AppointmentRecord) : null;
+    this.log.info("repo.appointments.getById", {
+      tenantId,
+      appointmentId,
+      found: !!found,
+    });
+    return found;
   }
 
   async getByLookup(
@@ -201,6 +207,12 @@ export class AppointmentsRepository {
 
     const items = (res.Items ?? []) as AppointmentRecord[];
     console.log("[AppointmentsRepository] Loaded doctor day view", {
+      tenantId,
+      doctorId,
+      dayIso,
+      count: items.length,
+    });
+    this.log.info("repo.appointments.doctorDay", {
       tenantId,
       doctorId,
       dayIso,
@@ -306,6 +318,13 @@ export class AppointmentsRepository {
       })
     );
 
+    this.log.info("repo.appointments.schedule.updated", {
+      tenantId: input.tenantId,
+      appointmentId: input.appointmentId,
+      startIso: input.startIso,
+      endIso: input.endIso,
+      doctorId: input.doctorId,
+    });
     return result.Attributes as AppointmentRecord;
   }
 
@@ -342,6 +361,11 @@ export class AppointmentsRepository {
       })
     );
 
+    this.log.info("repo.appointments.status.updated", {
+      tenantId,
+      appointmentId,
+      status,
+    });
     return result.Attributes as AppointmentRecord;
   }
 
