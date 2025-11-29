@@ -94,6 +94,12 @@ export class AppointmentsService {
       startIso: payload.startIso,
       source: payload.source ?? "whatsapp",
     });
+    this.log.info("appointments.create.start", {
+      tenantId: payload.tenantId,
+      doctorId: payload.doctorId,
+      userId: payload.userId,
+      source: payload.source ?? "whatsapp",
+    });
 
     const { startIso, endIso, durationMinutes } = this.normalizeTiming(payload.startIso, payload.endIso, payload.durationMinutes);
 
@@ -162,6 +168,12 @@ export class AppointmentsService {
       notes: payload.notes ?? target.notes,
     } satisfies UpdateScheduleInput);
 
+    this.log.info("appointments.reschedule.ok", {
+      tenantId: target.tenantId,
+      appointmentId: target.appointmentId,
+      doctorId,
+      newStartIso: startIso,
+    });
     return this.toResponse(updated);
   }
 
@@ -183,6 +195,10 @@ export class AppointmentsService {
     }
 
     const updated = await this.repo.updateStatus(target.tenantId, target.appointmentId, "cancelled");
+    this.log.info("appointments.cancel.ok", {
+      tenantId: target.tenantId,
+      appointmentId: target.appointmentId,
+    });
     return this.toResponse(updated);
   }
 
@@ -276,9 +292,23 @@ export class AppointmentsService {
 
       const overlap = Math.max(existingStart, newStart) < Math.min(existingEnd, newEnd);
       if (overlap) {
+        this.log.warn("appointments.availability.conflict", {
+          tenantId: params.tenantId,
+          doctorId: params.doctorId,
+          startIso: params.startIso,
+          conflictWith: appt.appointmentId,
+        });
         throw new Error("Selected horario is not available for this doctor");
       }
     }
+
+    this.log.info("appointments.availability.ok", {
+      tenantId: params.tenantId,
+      doctorId: params.doctorId,
+      startIso: params.startIso,
+      endIso: params.endIso,
+      checkedCount: appointments.length,
+    });
   }
 
   private normalizeTiming(startIso: string, endIso?: string, durationMinutes?: number) {
