@@ -46,6 +46,11 @@ export class TenantRepository {
       phoneNumberIds: mapped.phoneNumberIds?.length ?? 0,
       users: mapped.users?.length ?? 0,
     });
+    this.log.info("tenant.repo.hit.id", {
+      tenantId: mapped.tenantId,
+      phoneCount: mapped.phoneNumberIds?.length ?? 0,
+      userCount: mapped.users?.length ?? 0,
+    });
     return mapped;
   }
 
@@ -75,6 +80,11 @@ export class TenantRepository {
 
     const mapped = this.mapItem(item);
     console.log("[TenantRepository] Resolved tenant by phone number", {
+      phoneNumberId,
+      tenantId: mapped.tenantId,
+      whatsappPhones: mapped.whatsappPhones?.length ?? 0,
+    });
+    this.log.info("tenant.repo.hit.phone", {
       phoneNumberId,
       tenantId: mapped.tenantId,
       whatsappPhones: mapped.whatsappPhones?.length ?? 0,
