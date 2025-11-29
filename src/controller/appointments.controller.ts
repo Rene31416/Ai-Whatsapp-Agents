@@ -11,6 +11,7 @@ import {
 } from "ts-lambda-api";
 import { inject } from "inversify";
 import { z } from "zod";
+import { Logger } from "@aws-lambda-powertools/logger";
 import { AppointmentsService } from "../services/appointments.service";
 
 const createSchema = z
@@ -82,7 +83,10 @@ const availabilitySchema = z.object({
 
 @apiController("/appointments")
 export class AppointmentsController extends Controller {
-  constructor(@inject(AppointmentsService) private readonly service: AppointmentsService) {
+  constructor(
+    @inject(AppointmentsService) private readonly service: AppointmentsService,
+    @inject(Logger) private readonly log: Logger
+  ) {
     super();
   }
 
@@ -94,10 +98,15 @@ export class AppointmentsController extends Controller {
 
     try {
       const payload = createSchema.parse(requestBody);
+      this.log.info("appointments.api.create.received", {
+        tenantId: payload.tenantId,
+        doctorId: payload.doctorId,
+        userId: payload.userId,
+      });
       const result = await this.service.createAppointment(payload);
       return this.created(result);
     } catch (error) {
-      return this.handleError(error);
+      return this.handleError(error, "create");
     }
   }
 
@@ -162,7 +171,7 @@ export class AppointmentsController extends Controller {
       const result = await this.service.getAvailability(payload);
       return { statusCode: 200, body: result };
     } catch (error) {
-      return this.handleError(error);
+      return this.handleError(error, "availability");
     }
   }
 
@@ -176,30 +185,46 @@ export class AppointmentsController extends Controller {
   private async handleReschedule(appointmentId: string | undefined, requestBody: any) {
     try {
       const payload = rescheduleSchema.parse({ ...requestBody, appointmentId: requestBody?.appointmentId ?? appointmentId });
+      this.log.info("appointments.api.reschedule.received", {
+        tenantId: payload.tenantId,
+        appointmentId: payload.appointmentId,
+        doctorId: payload.doctorId ?? payload.newDoctorId,
+        userId: payload.userId,
+      });
       const result = await this.service.rescheduleAppointment(payload);
       return { statusCode: 200, body: result };
     } catch (error) {
-      return this.handleError(error);
+      return this.handleError(error, appointmentId ? "reschedule.withId" : "reschedule.noId");
     }
   }
 
   private async handleCancel(appointmentId: string | undefined, requestBody: any) {
     try {
       const payload = cancelSchema.parse({ ...requestBody, appointmentId: requestBody?.appointmentId ?? appointmentId });
+      this.log.info("appointments.api.cancel.received", {
+        tenantId: payload.tenantId,
+        appointmentId: payload.appointmentId,
+        doctorId: payload.doctorId,
+        userId: payload.userId,
+      });
       const result = await this.service.cancelAppointment(payload);
       return { statusCode: 200, body: result };
     } catch (error) {
-      return this.handleError(error);
+      return this.handleError(error, appointmentId ? "cancel.withId" : "cancel.noId");
     }
   }
 
-  private handleError(error: unknown) {
+  private handleError(error: unknown, route?: string) {
     if (error instanceof z.ZodError) {
       return { statusCode: 400, body: { message: "Invalid request", details: error.issues } };
     }
 
     const message = (error as Error)?.message ?? "Unexpected error";
     const statusCode = message.includes("not found") ? 404 : 400;
+    this.log.warn("appointments.api.error", {
+      route: route ?? "unknown",
+      message,
+    });
 
     return {
       statusCode,
