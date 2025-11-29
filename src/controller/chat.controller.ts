@@ -8,13 +8,17 @@ import {
 } from "ts-lambda-api";
 import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { inject } from "inversify";
+import { Logger } from "@aws-lambda-powertools/logger";
 import { TenantRepository } from "../services/tenant.repository";
 
 const sqs = new SQSClient({});
 
 @apiController("/webhook")
 export class WhatsappController extends Controller {
-  constructor(@inject(TenantRepository) private readonly tenantRepo: TenantRepository) {
+  constructor(
+    @inject(TenantRepository) private readonly tenantRepo: TenantRepository,
+    @inject(Logger) private readonly log: Logger
+  ) {
     super();
   }
 
@@ -26,6 +30,7 @@ export class WhatsappController extends Controller {
     @queryParam("hub.challenge") challenge: string
   ) {
     console.log("🔍 Incoming webhook query:", { mode, token, challenge });
+    this.log.info("webhook.verify.received", { mode, hasChallenge: !!challenge });
 
     const VERIFY_TOKEN = "test-handshake-token";
 
@@ -42,6 +47,10 @@ export class WhatsappController extends Controller {
   @POST("/")
   async receiveWebhook(@body body: any) {
     console.log("📩 Incoming webhook body:", JSON.stringify(body, null, 2));
+    this.log.info("webhook.receive.incoming", {
+      hasEntry: !!body?.entry?.length,
+      changeTypes: body?.entry?.[0]?.changes?.map((c: any) => c?.field) ?? [],
+    });
 
     try {
       const entry = body?.entry?.[0];
@@ -109,6 +118,11 @@ export class WhatsappController extends Controller {
       );
 
       console.log(`✅ Sent message ${messageId} for ${from} to SQS`);
+      this.log.info("webhook.sqs.sent", {
+        tenantId: payload.tenantId,
+        userId: payload.userId,
+        messageId: payload.messageId,
+      });
       return { status: "ok", queued: true };
     } catch (err: any) {
       console.error("❌ Webhook error:", err);
