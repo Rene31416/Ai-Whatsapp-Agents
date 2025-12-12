@@ -175,7 +175,14 @@ export class AppointmentsRepository {
       })
     );
 
-    return res.Items?.[0] ? (res.Items[0] as AppointmentRecord) : null;
+    const found = res.Items?.[0] ? (res.Items[0] as AppointmentRecord) : null;
+    this.log.info("repo.appointments.lookup", {
+      tenantId,
+      userId,
+      startIso,
+      found: !!found,
+    });
+    return found;
   }
 
   async listDoctorAppointmentsForDay(
