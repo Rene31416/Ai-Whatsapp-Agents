@@ -57,7 +57,12 @@ export class WhatsappController extends Controller {
       const change = entry?.changes?.[0];
       const value = change?.value;
 
-      if (value?.statuses) return { status: "ok", ignored: "status_event" };
+      if (value?.statuses) {
+        this.log.info("webhook.receive.status_event", {
+          statusCount: value.statuses.length,
+        });
+        return { status: "ok", ignored: "status_event" };
+      }
 
       const phoneNumberId = value?.metadata?.phone_number_id;
       if (!phoneNumberId)
