@@ -248,6 +248,11 @@ export class GoogleCalendarService {
     });
 
     client.setCredentials({ refresh_token: refreshToken });
+    this.log.info("calendar.oauth.client.ready", {
+      tenantId,
+      hasRefreshToken: !!refreshToken,
+      mode: process.env.LOCAL_DRY_RUN === "true" ? "local" : "lambda",
+    });
     return client;
   }
 
