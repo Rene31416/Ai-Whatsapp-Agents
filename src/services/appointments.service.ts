@@ -223,6 +223,12 @@ export class AppointmentsService {
         appointmentId: appt.appointmentId,
       }));
 
+    this.log.info("appointments.availability.result", {
+      tenantId: payload.tenantId,
+      doctorId: payload.doctorId,
+      busyCount: busy.length,
+    });
+
     return {
       tenantId: payload.tenantId,
       doctorId: payload.doctorId,
