@@ -48,6 +48,10 @@ async function main() {
 
     const fakeContext = {}; // minimal mock
     const response = await app.run(fakeEvent, fakeContext);
+    console.log("[main.run.response]", {
+      statusCode: response.statusCode,
+      hasBody: !!response.body,
+    });
 
     console.log("\n--- API Response ---");
     console.log(response.body);
