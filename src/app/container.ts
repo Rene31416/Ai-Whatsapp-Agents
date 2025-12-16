@@ -19,6 +19,8 @@ import { AppointmentsRepository } from "../services/appointments.repository";
 import { AppointmentsService } from "../services/appointments.service";
 import { AppointmentsController } from "../controller/appointments.controller";
 import { DoctorsRepository } from "../services/doctors.repository";
+import { ClinicService } from "../services/clinic.service";
+import { ClinicController } from "../controller/clinic.controller";
 // import { DentalWorkflow } from "../chat/dental.workflow";
 
 const container = new Container({ defaultScope: "Singleton" });
@@ -37,11 +39,13 @@ container.bind(TenantRepository).toSelf();
 container.bind(DoctorsRepository).toSelf();
 container.bind(AppointmentsRepository).toSelf();
 container.bind(AppointmentsService).toSelf();
+container.bind(ClinicService).toSelf();
 container.bind(ChatService).toSelf();
 
 // Controllers / misc
 container.bind(WhatsappController).toSelf();
 container.bind(AppointmentsController).toSelf();
+container.bind(ClinicController).toSelf();
 container.bind(ConsoleLogger).toSelf();
 container.bind(ContactFactsExtractorService).toSelf();
 container.bind(CalendarPromptService).toSelf();
@@ -59,9 +63,10 @@ console.log("[container] Registered bindings", {
     "DoctorsRepository",
     "AppointmentsRepository",
     "AppointmentsService",
+    "ClinicService",
     "ChatService",
   ],
-  controllers: ["WhatsappController", "AppointmentsController"],
+  controllers: ["WhatsappController", "AppointmentsController", "ClinicController"],
   misc: ["ConsoleLogger", "ContactFactsExtractorService", "CalendarPromptService", "DentalWorkflow"],
 });
 
