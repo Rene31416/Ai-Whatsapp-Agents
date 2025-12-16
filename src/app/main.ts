@@ -4,6 +4,7 @@ import * as path from "path";
 import { container } from "./container";
 import type { ApiRequest } from "ts-lambda-api";
 import "../controller/chat.controller";
+import "../controller/clinic.controller";
 
 // 🧩 1. Reuse same controller structure as Lambda
 const appConfig = new AppConfig();
