@@ -1,12 +1,19 @@
-import { DynamoDBClient, GetItemCommand, QueryCommand, AttributeValue } from "@aws-sdk/client-dynamodb";
+import {
+  DynamoDBClient,
+  GetItemCommand,
+  QueryCommand,
+  AttributeValue,
+} from "@aws-sdk/client-dynamodb";
 import { inject, injectable } from "inversify";
 import { Logger } from "@aws-lambda-powertools/logger";
 
 export type TenantMetadata = {
   tenantId: string;
   tenantName?: string;
+  address?: string;
+  availability?: string;
   createdAt?: string;
-  phoneNumberIds: string[];
+  phoneNumberId: string[];
   whatsappPhones: string[];
   whatsappSecretName?: string;
   calendarSecretName?: string;
@@ -43,18 +50,20 @@ export class TenantRepository {
     const mapped = this.mapItem(result.Item);
     console.log("[TenantRepository] Loaded tenant by id", {
       tenantId: mapped.tenantId,
-      phoneNumberIds: mapped.phoneNumberIds?.length ?? 0,
+      phoneNumberIds: mapped.phoneNumberId?.length ?? 0,
       users: mapped.users?.length ?? 0,
     });
     this.log.info("tenant.repo.hit.id", {
       tenantId: mapped.tenantId,
-      phoneCount: mapped.phoneNumberIds?.length ?? 0,
+      phoneCount: mapped.phoneNumberId?.length ?? 0,
       userCount: mapped.users?.length ?? 0,
     });
     return mapped;
   }
 
-  async getByPhoneNumberId(phoneNumberId: string): Promise<TenantMetadata | null> {
+  async getByPhoneNumberId(
+    phoneNumberId: string
+  ): Promise<TenantMetadata | null> {
     if (!phoneNumberId) return null;
     if (!this.phoneIndexName) {
       throw new Error("TENANT_GSI_PHONE env is required for phone lookups");
@@ -101,8 +110,12 @@ export class TenantRepository {
     return {
       tenantId,
       tenantName: item.tenantName?.S,
+      address: item.address?.S,
+      availability: item.availability?.S,
       createdAt: item.createdAt?.S,
-      phoneNumberIds: this.extractStringList(item.phoneNumberIds) ?? (item.phoneNumberId?.S ? [item.phoneNumberId.S] : []),
+      phoneNumberId:
+        this.extractStringList(item.phoneNumberIds) ??
+        (item.phoneNumberId?.S ? [item.phoneNumberId.S] : []),
       whatsappPhones: this.extractStringList(item.whatsappPhones),
       whatsappSecretName: item.whatsappSecretName?.S,
       calendarSecretName: item.calendarSecretName?.S,
@@ -113,7 +126,9 @@ export class TenantRepository {
   private extractStringList(attr?: AttributeValue): string[] {
     if (!attr || !attr.L) return [];
     return (
-      attr.L.map((entry) => entry.S).filter((s): s is string => typeof s === "string" && s.length > 0) ?? []
+      attr.L.map((entry) => entry.S).filter(
+        (s): s is string => typeof s === "string" && s.length > 0
+      ) ?? []
     );
   }
 }
