@@ -2,6 +2,7 @@ import { container } from "../container";
 import { ApiLambdaApp, AppConfig } from "ts-lambda-api";
 import * as path from "path"
 import "../../controller/chat.controller";
+import "../../controller/clinic.controller";
 
 const appConfig = new AppConfig();
 
@@ -16,4 +17,3 @@ export async function handler(event: any, context: any) {
     return response
 
 }
-
