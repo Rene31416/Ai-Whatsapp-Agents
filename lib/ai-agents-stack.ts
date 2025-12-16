@@ -101,7 +101,8 @@ export class AiAgentsStack extends cdk.Stack {
     // PK: UserKey = "<tenantId>#<userId>"
     // Attributes (runtime): summary (S), updatedAt (S ISO), version (N) if you choose to use it
     const memoryTable = new dynamodb.Table(this, "MemorySummaries", {
-      partitionKey: { name: "UserKey", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "thread_id", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "checkpoint_id", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dataKey,
@@ -152,7 +153,10 @@ export class AiAgentsStack extends cdk.Stack {
 
     webhookLambda.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+        actions: [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
         resources: [`${whatsAppSecretArn}*`],
       })
     );
@@ -217,7 +221,10 @@ export class AiAgentsStack extends cdk.Stack {
 
     chatServiceLambda.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ["secretsmanager:GetSecretValue", "secretsmanager:DescribeSecret"],
+        actions: [
+          "secretsmanager:GetSecretValue",
+          "secretsmanager:DescribeSecret",
+        ],
         resources: [`${whatsAppSecretArn}*`],
       })
     );
@@ -247,13 +254,20 @@ export class AiAgentsStack extends cdk.Stack {
     });
 
     const webhook = api.root.addResource("webhook");
-    webhook.addMethod("GET", new apigateway.LambdaIntegration(webhookLambda));
-    webhook.addMethod("POST", new apigateway.LambdaIntegration(webhookLambda));
+    const clinic = api.root.addResource("clinic");
+    const webhookIntegration = new apigateway.LambdaIntegration(webhookLambda);
+    webhook.addMethod("GET", webhookIntegration);
+    webhook.addMethod("POST", webhookIntegration);
+    clinic.addMethod("GET", webhookIntegration);
 
     const appointmentsResource = api.root.addResource("appointments");
-    const appointmentIdResource = appointmentsResource.addResource("{appointmentId}");
-    const availabilityResource = appointmentsResource.addResource("availability");
-    const appointmentsIntegration = new apigateway.LambdaIntegration(appointmentsLambda);
+    const appointmentIdResource =
+      appointmentsResource.addResource("{appointmentId}");
+    const availabilityResource =
+      appointmentsResource.addResource("availability");
+    const appointmentsIntegration = new apigateway.LambdaIntegration(
+      appointmentsLambda
+    );
 
     appointmentsResource.addMethod("POST", appointmentsIntegration);
     appointmentsResource.addMethod("PATCH", appointmentsIntegration);
@@ -267,9 +281,15 @@ export class AiAgentsStack extends cdk.Stack {
       cdk.Fn.join("", [api.url, "appointments"])
     );
 
-    new cdk.CfnOutput(this, "AppointmentsTableName", { value: appointmentsTable.tableName });
-    new cdk.CfnOutput(this, "DoctorsTableName", { value: doctorsTable.tableName });
+    new cdk.CfnOutput(this, "AppointmentsTableName", {
+      value: appointmentsTable.tableName,
+    });
+    new cdk.CfnOutput(this, "DoctorsTableName", {
+      value: doctorsTable.tableName,
+    });
     new cdk.CfnOutput(this, "WebhookUrl", { value: `${api.url}webhook` });
-    new cdk.CfnOutput(this, "MemoryTableName", { value: memoryTable.tableName });
+    new cdk.CfnOutput(this, "MemoryTableName", {
+      value: memoryTable.tableName,
+    });
   }
 }
