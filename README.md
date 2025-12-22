@@ -16,7 +16,7 @@ LLM-powered WhatsApp assistant for clinic appointments, packaged as an AWS CDK T
 - `POST /appointments` – Create (requires `tenantId`, `userId`, `doctorId`, `startIso` + `endIso | durationMinutes`).
 - `PATCH /appointments` or `/appointments/{id}` – Reschedule by ID or by user/doctor/start.
 - `DELETE /appointments` or `/appointments/{id}` – Cancel by ID or by user/doctor/start.
-- `GET /appointments/availability?tenantId=...&doctorId=...&date=...` – Returns busy blocks for the day.
+- `GET /appointments/availability?tenantId=...&(doctorId|userId)=...&from=...&to=...` – Returns busy blocks within the requested range for a doctor or a user.
 
 ## Local development
 - Install deps: `npm install` (Node 20). Bundles are built with esbuild.

@@ -11,7 +11,7 @@ Architecture Plan (Source of Truth in DynamoDB)
   1. `POST /appointments` (create)
   2. `PATCH /appointments/{id}` (reschedule)
   3. `DELETE /appointments/{id}` (cancel)
-  4. `GET /availability?tenantId=...&doctorId=...&date=...`
+  4. `GET /availability?tenantId=...&(doctorId|userId)=...&from=...&to=...`
 - Implement Lambda handlers behind API Gateway. Each write emits EventBridge/SQS events: `appointment.created`, `appointment.updated`, `appointment.cancelled`.
 
 2. Calendar Sync (Optional per tenant)
