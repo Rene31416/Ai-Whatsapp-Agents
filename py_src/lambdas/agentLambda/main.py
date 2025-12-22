@@ -31,12 +31,11 @@ def handler(event: SQSEvent, context):
 
         tenant_id= sqs_message['tenantId']
         user_id= sqs_message['userId']
-        user_message= sqs_message['combinedText']
-        phone_number_id =sqs_message["whatsappMeta"]["phoneNumberId"]
-        print(tenant_id, user_id, user_message, phone_number_id, phone_number_id)
+        user_message= sqs_message['combinedText']                                          #############################
+        phone_number_id =sqs_message["whatsappMeta"]["phoneNumberId"]                      # Tech debth fix this parse #
+        print(tenant_id, user_id, user_message, phone_number_id, phone_number_id)          #############################
         invoke_handler(tenant_id, user_message, user_id, phone_number_id)
-        # Helper methods exist for nested events (e.g., SQS carrying an S3 or SNS event)
-        # if record.decoded_nested_s3_event: ...
+
 
     return {"statusCode": 200, "body": "Messages processed with Powertools"}
 
