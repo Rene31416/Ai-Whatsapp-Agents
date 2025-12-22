@@ -14,6 +14,10 @@ const querySchema = z
     path: ["phoneNumberIndexId"],
   });
 
+const doctorsQuerySchema = z.object({
+  tenantId: z.string().min(1, "Provide tenantId query param"),
+});
+
 @apiController("/clinic")
 export class ClinicController extends Controller {
   constructor(
@@ -47,6 +51,28 @@ export class ClinicController extends Controller {
       });
 
       return { statusCode, body: { message } };
+    }
+  }
+
+  @GET("/doctors")
+  async getDoctors(@queryParam("tenantId") tenantId?: string) {
+    try {
+      const { tenantId: parsedTenantId } = doctorsQuerySchema.parse({ tenantId });
+      const doctors = await this.clinicService.getDoctorsByTenant(parsedTenantId);
+
+      return { statusCode: 200, body: doctors };
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return { statusCode: 400, body: { message: "Invalid request", details: error.issues } };
+      }
+
+      const message = (error as Error)?.message ?? "Unexpected error";
+      this.log.warn("clinic.controller.error", {
+        message,
+        route: "/clinic/doctors",
+      });
+
+      return { statusCode: 500, body: { message } };
     }
   }
 }

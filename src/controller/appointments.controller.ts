@@ -29,13 +29,10 @@ const createSchema = z
     source: z.string().optional(),
     notes: z.string().optional(),
   })
-  .refine(
-    (data) => Boolean(data.endIso || data.durationMinutes),
-    {
-      message: "Provide endIso or durationMinutes",
-      path: ["endIso"],
-    }
-  );
+  .refine((data) => Boolean(data.endIso || data.durationMinutes), {
+    message: "Provide endIso or durationMinutes",
+    path: ["endIso"],
+  });
 
 const rescheduleSchema = z
   .object({
@@ -52,7 +49,10 @@ const rescheduleSchema = z
     notes: z.string().optional(),
   })
   .refine(
-    (data) => Boolean(data.appointmentId || (data.userId && data.doctorId && data.startIso)),
+    (data) =>
+      Boolean(
+        data.appointmentId || (data.userId && data.doctorId && data.startIso)
+      ),
     {
       message: "Provide appointmentId or (userId, doctorId, startIso)",
       path: ["appointmentId"],
@@ -68,18 +68,38 @@ const cancelSchema = z
     startIso: z.string().optional(),
   })
   .refine(
-    (data) => Boolean(data.appointmentId || (data.userId && data.doctorId && data.startIso)),
+    (data) =>
+      Boolean(
+        data.appointmentId || (data.userId && data.doctorId && data.startIso)
+      ),
     {
       message: "Provide appointmentId or (userId, doctorId, startIso)",
       path: ["appointmentId"],
     }
   );
 
-const availabilitySchema = z.object({
-  tenantId: z.string().min(1),
-  doctorId: z.string().min(1),
-  dateIso: z.string().min(1),
-});
+const availabilitySchema = z
+  .object({
+    tenantId: z.string().min(1),
+    doctorId: z.string().min(1).optional(),
+    userId: z.string().min(1).optional(),
+    fromIso: z.string().min(1),
+    toIso: z.string().min(1),
+  })
+  .refine(
+    (data) => {
+      if (!data.doctorId && !data.userId) {
+        return false;
+      }
+      const from = new Date(data.fromIso).getTime();
+      const to = new Date(data.toIso).getTime();
+      return !Number.isNaN(from) && !Number.isNaN(to) && from < to;
+    },
+    {
+      message: "Provide doctorId or userId plus valid from/to ISO timestamps where from < to",
+      path: ["doctorId"],
+    }
+  );
 
 @apiController("/appointments")
 export class AppointmentsController extends Controller {
@@ -119,15 +139,18 @@ export class AppointmentsController extends Controller {
     return this.handleReschedule(undefined, requestBody);
   }
 
-  @PATCH("/{appointmentId}")
+  @PATCH("/:appointmentId")
   async rescheduleWithId(
     @pathParam("appointmentId") appointmentId: string,
     @body requestBody: any
   ) {
-    console.log("[AppointmentsController] PATCH /appointments/{appointmentId}", {
-      appointmentId,
-      bodyKeys: Object.keys(requestBody ?? {}),
-    });
+    console.log(
+      "[AppointmentsController] PATCH /appointments/{appointmentId}",
+      {
+        appointmentId,
+        bodyKeys: Object.keys(requestBody ?? {}),
+      }
+    );
 
     return this.handleReschedule(appointmentId, requestBody);
   }
@@ -141,15 +164,18 @@ export class AppointmentsController extends Controller {
     return this.handleCancel(undefined, requestBody);
   }
 
-  @DELETE("/{appointmentId}")
+  @DELETE("/:appointmentId")
   async cancelWithId(
     @pathParam("appointmentId") appointmentId: string,
     @body requestBody: any
   ) {
-    console.log("[AppointmentsController] DELETE /appointments/{appointmentId}", {
-      appointmentId,
-      bodyKeys: Object.keys(requestBody ?? {}),
-    });
+    console.log(
+      "[AppointmentsController] DELETE /appointments/{appointmentId}",
+      {
+        appointmentId,
+        bodyKeys: Object.keys(requestBody ?? {}),
+      }
+    );
 
     return this.handleCancel(appointmentId, requestBody);
   }
@@ -158,16 +184,26 @@ export class AppointmentsController extends Controller {
   async availability(
     @queryParam("tenantId") tenantId: string,
     @queryParam("doctorId") doctorId: string,
-    @queryParam("date") date: string
+    @queryParam("userId") userId: string,
+    @queryParam("from") from: string,
+    @queryParam("to") to: string
   ) {
     console.log("[AppointmentsController] GET /appointments/availability", {
       tenantId,
       doctorId,
-      date,
+      userId,
+      from,
+      to,
     });
 
     try {
-      const payload = availabilitySchema.parse({ tenantId, doctorId, dateIso: date ?? new Date().toISOString() });
+      const payload = availabilitySchema.parse({
+        tenantId,
+        doctorId,
+        userId,
+        fromIso: from,
+        toIso: to,
+      });
       const result = await this.service.getAvailability(payload);
       return { statusCode: 200, body: result };
     } catch (error) {
@@ -182,9 +218,15 @@ export class AppointmentsController extends Controller {
     };
   }
 
-  private async handleReschedule(appointmentId: string | undefined, requestBody: any) {
+  private async handleReschedule(
+    appointmentId: string | undefined,
+    requestBody: any
+  ) {
     try {
-      const payload = rescheduleSchema.parse({ ...requestBody, appointmentId: requestBody?.appointmentId ?? appointmentId });
+      const payload = rescheduleSchema.parse({
+        ...requestBody,
+        appointmentId: requestBody?.appointmentId ?? appointmentId,
+      });
       this.log.info("appointments.api.reschedule.received", {
         tenantId: payload.tenantId,
         appointmentId: payload.appointmentId,
@@ -194,13 +236,22 @@ export class AppointmentsController extends Controller {
       const result = await this.service.rescheduleAppointment(payload);
       return { statusCode: 200, body: result };
     } catch (error) {
-      return this.handleError(error, appointmentId ? "reschedule.withId" : "reschedule.noId");
+      return this.handleError(
+        error,
+        appointmentId ? "reschedule.withId" : "reschedule.noId"
+      );
     }
   }
 
-  private async handleCancel(appointmentId: string | undefined, requestBody: any) {
+  private async handleCancel(
+    appointmentId: string | undefined,
+    requestBody: any
+  ) {
     try {
-      const payload = cancelSchema.parse({ ...requestBody, appointmentId: requestBody?.appointmentId ?? appointmentId });
+      const payload = cancelSchema.parse({
+        ...requestBody,
+        appointmentId: requestBody?.appointmentId ?? appointmentId,
+      });
       this.log.info("appointments.api.cancel.received", {
         tenantId: payload.tenantId,
         appointmentId: payload.appointmentId,
@@ -210,13 +261,19 @@ export class AppointmentsController extends Controller {
       const result = await this.service.cancelAppointment(payload);
       return { statusCode: 200, body: result };
     } catch (error) {
-      return this.handleError(error, appointmentId ? "cancel.withId" : "cancel.noId");
+      return this.handleError(
+        error,
+        appointmentId ? "cancel.withId" : "cancel.noId"
+      );
     }
   }
 
   private handleError(error: unknown, route?: string) {
     if (error instanceof z.ZodError) {
-      return { statusCode: 400, body: { message: "Invalid request", details: error.issues } };
+      return {
+        statusCode: 400,
+        body: { message: "Invalid request", details: error.issues },
+      };
     }
 
     const message = (error as Error)?.message ?? "Unexpected error";
