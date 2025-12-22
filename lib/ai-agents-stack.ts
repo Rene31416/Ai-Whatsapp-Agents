@@ -101,8 +101,8 @@ export class AiAgentsStack extends cdk.Stack {
     // PK: UserKey = "<tenantId>#<userId>"
     // Attributes (runtime): summary (S), updatedAt (S ISO), version (N) if you choose to use it
     const memoryTable = new dynamodb.Table(this, "MemorySummaries", {
-      partitionKey: { name: "thread_id", type: dynamodb.AttributeType.STRING },
-      sortKey: { name: "checkpoint_id", type: dynamodb.AttributeType.STRING },
+      partitionKey: { name: "PK", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       encryption: dynamodb.TableEncryption.CUSTOMER_MANAGED,
       encryptionKey: dataKey,
@@ -142,11 +142,13 @@ export class AiAgentsStack extends cdk.Stack {
         CHAT_INGRESS_QUEUE_URL: chatIngressQueue.queueUrl,
         TENANT_TABLE_NAME: tenantTable.tableName,
         TENANT_GSI_PHONE: "PhoneNumberIdIndex",
+        DOCTORS_TABLE_NAME: doctorsTable.tableName,
       },
     });
 
     geminiSecret.grantRead(webhookLambda);
     tenantTable.grantReadData(webhookLambda);
+    doctorsTable.grantReadData(webhookLambda);
     chatTable.grantReadWriteData(webhookLambda);
     dataKey.grantEncryptDecrypt(webhookLambda);
     chatIngressQueue.grantSendMessages(webhookLambda);
@@ -162,6 +164,7 @@ export class AiAgentsStack extends cdk.Stack {
     );
 
     // 🤖 ChatService Lambda (consumes FIFO ingress queue)
+    /*
     const chatServiceLambda = new lambda.Function(this, "ChatServiceLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
@@ -180,6 +183,30 @@ export class AiAgentsStack extends cdk.Stack {
         DOCTORS_TABLE_NAME: doctorsTable.tableName,
         OPENAI_SECRET_ARN: openAiSecret.secretArn,
       },
+    });
+*/
+
+    const depsLayer = new lambda.LayerVersion(this, "DepsLayer", {
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, "../py_src/lambdas/dependencies/deps")
+      ),
+      compatibleRuntimes: [lambda.Runtime.PYTHON_3_12],
+      compatibleArchitectures: [lambda.Architecture.X86_64],
+    });
+
+    const chatServiceLambda = new lambda.Function(this, "python-lambda", {
+      functionName: "my-python-service",
+      timeout: cdk.Duration.seconds(30),
+      runtime: lambda.Runtime.PYTHON_3_12,
+      handler: "agentLambda.main.handler",
+      code: lambda.Code.fromAsset("py_src/lambdas/dist/lambda_function.zip"),
+      architecture: lambda.Architecture.X86_64,
+      environment: {
+        MEMORY_TABLE_NAME: memoryTable.tableName,
+        OPENAI_SECRET_ID: openAiSecret.secretArn,
+        WHATSAPP_SECRET_ARN: whatsAppSecretArn,
+      },
+      layers: [depsLayer],
     });
 
     tenantTable.grantReadData(chatServiceLambda);
@@ -242,6 +269,7 @@ export class AiAgentsStack extends cdk.Stack {
         APPOINTMENTS_GSI_USER: "UserAppointmentsIndex",
         APPOINTMENTS_GSI_DOCTOR: "DoctorScheduleIndex",
         APPOINTMENTS_GSI_STATUS: "StatusIndex",
+        DOCTORS_TABLE_NAME: doctorsTable.tableName,
       },
     });
 
@@ -265,6 +293,7 @@ export class AiAgentsStack extends cdk.Stack {
       appointmentsResource.addResource("{appointmentId}");
     const availabilityResource =
       appointmentsResource.addResource("availability");
+    const doctorResources = clinic.addResource("doctors");
     const appointmentsIntegration = new apigateway.LambdaIntegration(
       appointmentsLambda
     );
@@ -275,6 +304,10 @@ export class AiAgentsStack extends cdk.Stack {
     appointmentIdResource.addMethod("PATCH", appointmentsIntegration);
     appointmentIdResource.addMethod("DELETE", appointmentsIntegration);
     availabilityResource.addMethod("GET", appointmentsIntegration);
+
+    // TO-do -> Remove webhook lambda form clinic integration
+    // TO-do -> improve error response from clinics api
+    doctorResources.addMethod("GET", webhookIntegration);
 
     chatServiceLambda.addEnvironment(
       "APPOINTMENTS_API_BASE_URL",
