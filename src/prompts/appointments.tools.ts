@@ -79,11 +79,22 @@ export function createAppointmentsTools(config: AppointmentsToolConfig, doctors:
     return end.toISOString();
   };
 
-  const stripDate = (iso: string) => {
-    if (!iso) return "";
+  const startOfDay = (iso: string) => {
     const date = new Date(iso);
-    if (Number.isNaN(date.getTime())) return iso.slice(0, 10);
-    return date.toISOString().slice(0, 10);
+    if (Number.isNaN(date.getTime())) {
+      return new Date().toISOString();
+    }
+    date.setUTCHours(0, 0, 0, 0);
+    return date.toISOString();
+  };
+
+  const endOfDay = (iso: string) => {
+    const date = new Date(iso);
+    if (Number.isNaN(date.getTime())) {
+      return new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+    }
+    date.setUTCHours(23, 59, 59, 999);
+    return date.toISOString();
   };
 
   const overlap = (aStart: string, aEnd: string, bStart: string, bEnd: string) => {
@@ -103,6 +114,7 @@ export function createAppointmentsTools(config: AppointmentsToolConfig, doctors:
       tenantId: z.string(),
       doctorId: z.string().optional(),
       doctor: z.string().optional(),
+      userId: z.string().optional(),
       startIso: z.string(),
       endIso: z.string().optional(),
     }),
@@ -111,22 +123,30 @@ export function createAppointmentsTools(config: AppointmentsToolConfig, doctors:
         tenantId: string;
         doctorId?: string;
         doctor?: string;
+        userId?: string;
         startIso: string;
         endIso?: string;
       };
 
       const doctorId =
         normalizeDoctorId((input as any)?.doctorId ?? (input as any)?.doctor) || "";
-      if (!doctorId) {
-        throw new AppointmentsToolError(400, "doctorId is required for availability");
+      const userId = (input as any)?.userId ? String((input as any).userId) : "";
+      if (!doctorId && !userId) {
+        throw new AppointmentsToolError(400, "Provide doctorId or userId for availability checks");
       }
 
       const start = typeof startIso === "string" ? startIso : new Date().toISOString();
       const endIso = (input as any)?.endIso ?? addMinutes(start, 30);
       const url = new URL(`${baseUrl}/availability`);
       url.searchParams.set("tenantId", tenantId);
-      url.searchParams.set("doctorId", doctorId);
-      url.searchParams.set("date", stripDate(start));
+      if (doctorId) {
+        url.searchParams.set("doctorId", doctorId);
+      }
+      if (userId) {
+        url.searchParams.set("userId", userId);
+      }
+      url.searchParams.set("from", startOfDay(start));
+      url.searchParams.set("to", endOfDay(endIso));
 
       const data = (await requestJson("GET", url.toString())) as any;
       const busy = Array.isArray(data?.busy) ? data.busy : [];

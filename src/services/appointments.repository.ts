@@ -228,6 +228,114 @@ export class AppointmentsRepository {
     return items;
   }
 
+  async listDoctorAppointmentsInRange(
+    tenantId: string,
+    doctorId: string,
+    fromIso: string,
+    toIso: string
+  ): Promise<AppointmentRecord[]> {
+    if (!this.doctorIndex) {
+      throw new Error("APPOINTMENTS_GSI_DOCTOR env is required");
+    }
+
+    const { startKey, endKey } = this.buildRangeKeys(fromIso, toIso);
+
+    const res = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        IndexName: this.doctorIndex,
+        KeyConditionExpression: "#dk = :dk AND #sk BETWEEN :start AND :end",
+        ExpressionAttributeNames: {
+          "#dk": "DoctorKey",
+          "#sk": "StartKey",
+        },
+        ExpressionAttributeValues: {
+          ":dk": this.buildDoctorKey(tenantId, doctorId),
+          ":start": startKey,
+          ":end": endKey,
+        },
+      })
+    );
+
+    const items = (res.Items ?? []) as AppointmentRecord[];
+    this.log.info("repo.appointments.doctorRange", {
+      tenantId,
+      doctorId,
+      fromIso,
+      toIso,
+      count: items.length,
+    });
+    return items;
+  }
+
+  async listUserAppointmentsInRange(
+    tenantId: string,
+    userId: string,
+    fromIso: string,
+    toIso: string
+  ): Promise<AppointmentRecord[]> {
+    if (!this.userIndex) {
+      throw new Error("APPOINTMENTS_GSI_USER env is required");
+    }
+
+    const { startKey, endKey } = this.buildRangeKeys(fromIso, toIso);
+
+    const res = await this.client.send(
+      new QueryCommand({
+        TableName: this.tableName,
+        IndexName: this.userIndex,
+        KeyConditionExpression: "#uk = :uk AND #sk BETWEEN :start AND :end",
+        ExpressionAttributeNames: {
+          "#uk": "UserKey",
+          "#sk": "StartKey",
+        },
+        ExpressionAttributeValues: {
+          ":uk": this.buildUserKey(tenantId, userId),
+          ":start": startKey,
+          ":end": endKey,
+        },
+      })
+    );
+
+    const items = (res.Items ?? []) as AppointmentRecord[];
+    this.log.info("repo.appointments.userRange", {
+      tenantId,
+      userId,
+      fromIso,
+      toIso,
+      count: items.length,
+    });
+    return items;
+  }
+
+  async listAppointmentsInRange(params: {
+    tenantId: string;
+    doctorId?: string;
+    userId?: string;
+    fromIso: string;
+    toIso: string;
+  }): Promise<AppointmentRecord[]> {
+    if (params.doctorId) {
+      return this.listDoctorAppointmentsInRange(
+        params.tenantId,
+        params.doctorId,
+        params.fromIso,
+        params.toIso
+      );
+    }
+
+    if (params.userId) {
+      return this.listUserAppointmentsInRange(
+        params.tenantId,
+        params.userId,
+        params.fromIso,
+        params.toIso
+      );
+    }
+
+    throw new Error("Provide doctorId or userId for range queries");
+  }
+
   async listTenantAppointmentsByStatus(
     tenantId: string,
     status: AppointmentStatus,
@@ -419,5 +527,14 @@ export class AppointmentsRepository {
     const d = date.getUTCDate().toString().padStart(2, "0");
     const base = `START#${y}${m}${d}`;
     return { start: `${base}#0000`, end: `${base}#2359` };
+  }
+
+  private buildRangeKeys(fromIso: string, toIso: string) {
+    const startKey = this.buildStartKey(fromIso);
+    const endKey = this.buildStartKey(toIso);
+    if (startKey > endKey) {
+      throw new Error("fromIso must be before toIso");
+    }
+    return { startKey, endKey };
   }
 }

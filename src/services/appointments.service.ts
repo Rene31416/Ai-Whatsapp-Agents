@@ -48,8 +48,10 @@ export type CancelAppointmentRequest = {
 
 export type AvailabilityRequest = {
   tenantId: string;
-  doctorId: string;
-  dateIso: string;
+  doctorId?: string;
+  userId?: string;
+  fromIso: string;
+  toIso: string;
 };
 
 export type AppointmentResponse = {
@@ -75,8 +77,10 @@ export type AppointmentResponse = {
 
 export type AvailabilityResponse = {
   tenantId: string;
-  doctorId: string;
-  dateIso: string;
+  doctorId?: string;
+  userId?: string;
+  fromIso: string;
+  toIso: string;
   busy: Array<{ startIso: string; endIso: string; appointmentId: string }>; // busy slots only for now
 };
 
@@ -206,14 +210,12 @@ export class AppointmentsService {
     console.log("[AppointmentsService] getAvailability request", {
       tenantId: payload.tenantId,
       doctorId: payload.doctorId,
-      dateIso: payload.dateIso,
+      userId: payload.userId,
+      fromIso: payload.fromIso,
+      toIso: payload.toIso,
     });
 
-    const appointments = await this.repo.listDoctorAppointmentsForDay(
-      payload.tenantId,
-      payload.doctorId,
-      payload.dateIso
-    );
+    const appointments = await this.repo.listAppointmentsInRange(payload);
 
     const busy = appointments
       .filter((appt) => appt.status !== "cancelled")
@@ -232,7 +234,9 @@ export class AppointmentsService {
     return {
       tenantId: payload.tenantId,
       doctorId: payload.doctorId,
-      dateIso: payload.dateIso,
+      userId: payload.userId,
+      fromIso: payload.fromIso,
+      toIso: payload.toIso,
       busy,
     };
   }

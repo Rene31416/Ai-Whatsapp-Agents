@@ -1,6 +1,7 @@
 import { inject, injectable } from "inversify";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { TenantRepository } from "./tenant.repository";
+import { DoctorsRepository } from "./doctors.repository";
 
 export type ClinicProfile = {
   tenantName?: string;
@@ -9,10 +10,17 @@ export type ClinicProfile = {
   whatsappPhones: string[];
 };
 
+export type DoctorSummary = {
+  doctorId: string;
+  name: string;
+  availabilityHours?: string;
+};
+
 @injectable()
 export class ClinicService {
   constructor(
     @inject(TenantRepository) private readonly tenantRepository: TenantRepository,
+    @inject(DoctorsRepository) private readonly doctorsRepository: DoctorsRepository,
     @inject(Logger) private readonly log: Logger
   ) {}
 
@@ -30,5 +38,15 @@ export class ClinicService {
       whatsappPhones: clinic.whatsappPhones ?? [],
     };
   }
-}
 
+  async getDoctorsByTenant(tenantId: string): Promise<DoctorSummary[]> {
+    const doctors = await this.doctorsRepository.listByTenant(tenantId);
+    this.log.info("clinic.service.doctors.list", { tenantId, count: doctors.length });
+
+    return doctors.map((doctor) => ({
+      doctorId: doctor.doctorId,
+      name: doctor.displayName,
+      availabilityHours: doctor.availabilityHours,
+    }));
+  }
+}

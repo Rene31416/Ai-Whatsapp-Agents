@@ -26,7 +26,6 @@ export class DoctorsRepository {
   }
 
   async listByTenant(tenantId: string): Promise<DoctorRecord[]> {
-    console.log("[debug][doctors.repository] random listing pulse", Math.random());
     const res = await this.client.send(
       new QueryCommand({
         TableName: this.tableName,
