@@ -1,0 +1,6 @@
+langchain
+langchain-openai
+python-dotenv
+langgraph-dynamodb-checkpoint
+boto3
+aws-lambda-powertools

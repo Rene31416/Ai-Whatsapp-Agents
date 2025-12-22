@@ -1,0 +1,14 @@
+langgraph_dynamodb_checkpoint-0.2.6.4.dist-info/INSTALLER,sha256=zuuue4knoyJ-UwPPXg8fezS7VCrXJQrAP7zeNuwvFQg,4
+langgraph_dynamodb_checkpoint-0.2.6.4.dist-info/METADATA,sha256=U9i6yrWad39JB-DUkFoYFpSuIIapZDlPR3DVYzA6b_o,4731
+langgraph_dynamodb_checkpoint-0.2.6.4.dist-info/RECORD,,
+langgraph_dynamodb_checkpoint-0.2.6.4.dist-info/REQUESTED,sha256=47DEQpj8HBSa-_TImW-5JCeuQeRkm5NMpJWZG3hSuFU,0
+langgraph_dynamodb_checkpoint-0.2.6.4.dist-info/WHEEL,sha256=qtCwoSJWgHk21S1Kb4ihdzI2rlJ1ZKaIurTj_ngOhyQ,87
+langgraph_dynamodb_checkpoint/LICENSE,sha256=2bm9uFabQZ3Ykb_SaSU_uUbAj2-htc6WJQmS_65qD00,1073
+langgraph_dynamodb_checkpoint/__init__.py,sha256=T0cP7fESzfsuHjy24qFZnyT3vkIOy-Gc8bMrhxeYKGk,323
+langgraph_dynamodb_checkpoint/__pycache__/__init__.cpython-312.pyc,,
+langgraph_dynamodb_checkpoint/__pycache__/dynamodbSaver.cpython-312.pyc,,
+langgraph_dynamodb_checkpoint/__pycache__/dynamodbSerializer.cpython-312.pyc,,
+langgraph_dynamodb_checkpoint/__pycache__/logger.cpython-312.pyc,,
+langgraph_dynamodb_checkpoint/dynamodbSaver.py,sha256=MQiS86kwOQR3BPtHUJ8U346geatwCX6o8GQMxGUw2eE,21243
+langgraph_dynamodb_checkpoint/dynamodbSerializer.py,sha256=DESsLWzqK8Ciyqj8fBczJqj8q54YUlJDn_dpi9McDBU,472
+langgraph_dynamodb_checkpoint/logger.py,sha256=5BlgaNqKTNQoPkYWyCh4Wf12uezQHqha8ZfJ7U6lURA,1776
