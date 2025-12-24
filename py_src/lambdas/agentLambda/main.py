@@ -5,10 +5,8 @@ from aws_lambda_powertools.utilities.data_classes import (
     event_source,
 )
 from agentLambda.utils.types import Context
-from agentLambda.clients.secret_manager_client import get_secret_json
 import json
-from agentLambda.clients.meta_client import send_whatsapp_message
-import os
+from agentLambda.clients.queue_client import QueueDispatcher
 
 # os.environ["OPENAI_API_KEY"]
 # os.environ["AWS_REGION"]
@@ -17,15 +15,15 @@ import os
 # os.environ["AWS_SESSION_TOKEN"]
 # os.environ["AWS_DEFAULT_REGION"]
 
-ended = True
+dispatcher = QueueDispatcher()
 
 
 @event_source(data_class=SQSEvent)
 def handler(event: SQSEvent, context):
     print(f"SQSevent: {event}")
     for record in event.records:
-        message, message_id = process_record(record)
-        print(f"Received message ID: {message_id}")
+        message, sqs_message_id = process_record(record)
+        print(f"Received message ID: {sqs_message_id}")
         print(f"Received message message: ")
         sqs_message= json.loads(message)
 
@@ -33,8 +31,9 @@ def handler(event: SQSEvent, context):
         user_id= sqs_message['userId']
         user_message= sqs_message['combinedText']                                          #############################
         phone_number_id =sqs_message["whatsappMeta"]["phoneNumberId"]                      # Tech debth fix this parse #
+        original_message_id = sqs_message.get("messageId")
         print(tenant_id, user_id, user_message, phone_number_id, phone_number_id)          #############################
-        invoke_handler(tenant_id, user_message, user_id, phone_number_id)
+        invoke_handler(tenant_id, user_message, user_id, phone_number_id, original_message_id)
 
 
     return {"statusCode": 200, "body": "Messages processed with Powertools"}
@@ -46,7 +45,7 @@ def process_record(record: SQSRecord) -> tuple[str, str]:
     return message, message_id
 
 
-def invoke_handler(tenant_id, user_message, user_id, phone_numberId):
+def invoke_handler(tenant_id, user_message, user_id, phone_numberId, original_message_id):
     context = Context(tenant_id=tenant_id, user_id=user_id, phone_number_id=phone_numberId)
     response = master_agent.invoke(
         {"messages": [{"role": "user", "content": user_message}]},
@@ -55,6 +54,17 @@ def invoke_handler(tenant_id, user_message, user_id, phone_numberId):
     )
     assitant_message = response["messages"][-1].content
     print(f'>Assitant: {assitant_message}')
-    send_whatsapp_message(assistant_message=assitant_message, phone_number_id=phone_numberId, user_id=user_id)
+    dispatcher.send_delivery_message(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        phone_number_id=phone_numberId,
+        message_body=assitant_message,
+        message_id=original_message_id,
+    )
+    dispatcher.send_persist_message(
+        tenant_id=tenant_id,
+        user_id=user_id,
+        message_body=assitant_message,
+        message_id=original_message_id,
+    )
     print('>All good')
-
