@@ -124,6 +124,10 @@ export class AiAgentsStack extends cdk.Stack {
       fifo: true,
     });
 
+    const standardDlq = new sqs.Queue(this, "StandardQueuesDLQ", {
+      retentionPeriod: cdk.Duration.days(14),
+    });
+
     const chatIngressQueue = new sqs.Queue(this, "ChatIngressQueue", {
       visibilityTimeout: cdk.Duration.seconds(120),
       fifo: true,
@@ -136,7 +140,7 @@ export class AiAgentsStack extends cdk.Stack {
     const deliverMessagesQueue = new sqs.Queue(this, "DeliverMessagesQueue", {
       visibilityTimeout: cdk.Duration.seconds(120),
       deadLetterQueue: {
-        queue: chatIngressFifoDlq,
+        queue: standardDlq,
         maxReceiveCount: 1,
       },
     });
@@ -144,7 +148,7 @@ export class AiAgentsStack extends cdk.Stack {
     const persisMessagesQueue = new sqs.Queue(this, "PersistMessagesQueue", {
       visibilityTimeout: cdk.Duration.seconds(120),
       deadLetterQueue: {
-        queue: chatIngressFifoDlq,
+        queue: standardDlq,
         maxReceiveCount: 1,
       },
     });
@@ -191,6 +195,7 @@ export class AiAgentsStack extends cdk.Stack {
         OPENAI_SECRET_ID: openAiSecret.secretArn,
         CHAT_PERSIS_MESSAGE_QUEUE: persisMessagesQueue.queueUrl,
         CHAT_DELIVER_MESSAGE_QUEUE: deliverMessagesQueue.queueUrl,
+        CHAT_SESSIONS_TABLE_NAME: chatTable.tableName,
       },
       layers: [depsLayer],
     });
@@ -203,17 +208,13 @@ export class AiAgentsStack extends cdk.Stack {
         functionName: "Pesist-Meesages-Lambda",
         runtime: lambda.Runtime.NODEJS_20_X,
         architecture: lambda.Architecture.ARM_64,
-        handler: "webhook.handler",
+        handler: "persistMessages.handler",
         code: lambda.Code.fromAsset(path.join(__dirname, "../dist")),
         timeout: cdk.Duration.seconds(30),
         memorySize: 512,
         environment: {
-          GEMINI_SECRET_ARN: geminiSecret.secretArn,
-          WHATSAPP_SECRET_ARN: whatsAppSecretArn,
-          CHAT_INGRESS_QUEUE_URL: chatIngressQueue.queueUrl,
-          TENANT_TABLE_NAME: tenantTable.tableName,
-          TENANT_GSI_PHONE: "PhoneNumberIdIndex",
-          DOCTORS_TABLE_NAME: doctorsTable.tableName,
+          CHAT_SESSIONS_TABLE_NAME: chatTable.tableName,
+          SERVICE_NAME: "persist-messages-lambda",
         },
       }
     );
@@ -226,12 +227,13 @@ export class AiAgentsStack extends cdk.Stack {
         functionName: "Deliver-Meesages-Lambda",
         runtime: lambda.Runtime.NODEJS_20_X,
         architecture: lambda.Architecture.ARM_64,
-        handler: "webhook.handler",
+        handler: "deliverMessages.handler",
         code: lambda.Code.fromAsset(path.join(__dirname, "../dist")),
         timeout: cdk.Duration.seconds(30),
         memorySize: 512,
         environment: {
           WHATSAPP_SECRET_ARN: whatsAppSecretArn,
+          SERVICE_NAME: "deliver-messages-lambda",
         },
       }
     );
@@ -280,49 +282,23 @@ export class AiAgentsStack extends cdk.Stack {
     // =========================================================================
 
     // Webhook grants
-    geminiSecret.grantRead(webhookLambda);
     tenantTable.grantReadData(webhookLambda);
-
-    dataKey.grantEncryptDecrypt(webhookLambda);
+    dataKey.grantDecrypt(webhookLambda);
     chatIngressQueue.grantSendMessages(webhookLambda);
-
-    webhookLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: [
-          "secretsmanager:GetSecretValue",
-          "secretsmanager:DescribeSecret",
-        ],
-        resources: [`${whatsAppSecretArn}*`],
-      })
-    );
+    persisMessagesQueue.grantSendMessages(webhookLambda);
 
     // Chat service grants
-    tenantTable.grantReadData(chatServiceLambda);
     memoryTable.grantReadWriteData(chatServiceLambda);
     dataKey.grantEncryptDecrypt(chatServiceLambda);
-
-    chatServiceLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["dynamodb:Query"],
-        resources: [`${tenantTable.tableArn}/index/*`],
-      })
-    );
-
-    chatServiceLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["dynamodb:DescribeTable"],
-        resources: [tenantTable.tableArn],
-      })
-    );
-
-    chatServiceLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ["dynamodb:Query"],
-        resources: [chatTable.tableArn, `${chatTable.tableArn}/index/*`],
-      })
-    );
-
-    chatServiceLambda.addToRolePolicy(
+    openAiSecret.grantRead(chatServiceLambda);
+    persisMessagesQueue.grantSendMessages(chatServiceLambda);
+    deliverMessagesQueue.grantSendMessages(chatServiceLambda);
+    // persist message lambda grants
+    dataKey.grantEncrypt(persistMessagesLambda);
+    chatTable.grantWriteData(persistMessagesLambda);
+    // Deliver Message lambda grants
+    dataKey.grantDecrypt(deliverMessagesLambda);
+    deliverMessagesLambda.addToRolePolicy(
       new iam.PolicyStatement({
         actions: [
           "secretsmanager:GetSecretValue",
@@ -332,7 +308,7 @@ export class AiAgentsStack extends cdk.Stack {
       })
     );
 
-    // Appointments grants
+    //appointments api
     appointmentsTable.grantReadWriteData(appointmentsLambda);
 
     // =========================================================================
