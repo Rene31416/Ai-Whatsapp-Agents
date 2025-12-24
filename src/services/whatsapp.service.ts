@@ -5,7 +5,6 @@ import {
   SecretsManagerClient,
   GetSecretValueCommand,
 } from "@aws-sdk/client-secrets-manager";
-import { TenantRepository } from "./tenant.repository";
 
 export interface WhatsappSecrets {
   WHATSAPP_ACCESS_TOKEN: string;
@@ -15,26 +14,21 @@ export interface WhatsappSecrets {
 
 @injectable()
 export class WhatsappService {
-  constructor(
-    @inject(Logger) private readonly log: Logger,
-    @inject(TenantRepository) private readonly tenants: TenantRepository
-  ) {}
+  constructor(@inject(Logger) private readonly log: Logger) {}
 
   /**
-   * Return WhatsApp API credentials for a given tenant.
+   * Return WhatsApp API credentials for a given Meta phone number id.
    *
-   * In Lambda:
-   *   - Fetches from Secrets Manager: `${WHATSAPP_SECRET_ARN}${tenantId}`
-   *
-   * In local dev (LOCAL_DRY_RUN === "true"):
-   *   - Does NOT call Secrets Manager
-   *   - Returns dummy-but-shaped creds from local env vars
-   *     so that the rest of the pipeline keeps running.
+   * Lambda path:
+   *   - Fetches from Secrets Manager using `WHATSAPP_SECRET_ARN + phoneNumberId`
+   * Local dev (LOCAL_DRY_RUN === "true") path:
+   *   - Skips Secrets Manager and returns local env overrides.
    */
-  
-  async getSecrets(tenantId: string): Promise<WhatsappSecrets> {
+  async getSecretsByPhoneNumberId(
+    phoneNumberId: string
+  ): Promise<WhatsappSecrets> {
     console.log("[WhatsappService] Resolving WhatsApp secrets", {
-      tenantId,
+      phoneNumberId,
       localDryRun: process.env.LOCAL_DRY_RUN === "true",
     });
 
@@ -46,7 +40,6 @@ export class WhatsappService {
         process.env.LOCAL_WHATSAPP_PHONE_NUMBER_ID ?? "DUMMY_PHONE_LOCAL";
 
       this.log.info("whatsapp.secrets.local", {
-        tenantId,
         phoneIdSuffix: localPhoneId.slice(-6),
       });
 
@@ -57,54 +50,18 @@ export class WhatsappService {
       };
     }
 
-    // Lambda / real path
-    const tenant = await this.tenants.getById(tenantId);
-    if (!tenant?.whatsappSecretName) {
-      throw new Error(`Tenant ${tenantId} missing whatsappSecretName`);
+    if (!phoneNumberId) {
+      throw new Error("phoneNumberId is required to fetch WhatsApp secrets");
     }
 
-    const secretId = this.resolveSecretId(
-      tenant.whatsappSecretName,
-      process.env.WHATSAPP_SECRET_ARN
-    );
-
-    const client = new SecretsManagerClient({});
-    const res = await client.send(
-      new GetSecretValueCommand({ SecretId: secretId })
-    );
-
-    if (!res.SecretString) {
-      throw new Error("Empty secret value from Secrets Manager");
+    const prefix = process.env.WHATSAPP_SECRET_ARN;
+    if (!prefix) {
+      throw new Error("WHATSAPP_SECRET_ARN env is required");
     }
+    const secretName = `${process.env.WHATSAPP_SECRET_ARN}${phoneNumberId}`;
 
-    const parsed = JSON.parse(res.SecretString);
-
-    const secrets: WhatsappSecrets = {
-      WHATSAPP_ACCESS_TOKEN: parsed.WHATSAPP_ACCESS_TOKEN,
-      WHATSAPP_PHONE_NUMBER_ID: parsed.WHATSAPP_PHONE_NUMBER_ID,
-      VERIFY_TOKEN: parsed.VERIFY_TOKEN,
-    };
-
-    if (
-      !secrets.WHATSAPP_ACCESS_TOKEN ||
-      !secrets.WHATSAPP_PHONE_NUMBER_ID
-    ) {
-      throw new Error(
-        `Missing required WhatsApp fields in secret for tenant ${tenantId}`
-      );
-    }
-
-    console.log("[WhatsappService] Secrets fetched from Secrets Manager", {
-      tenantId,
-      secretIdTail: secretId.slice(-12),
-    });
-
-    this.log.info("whatsapp.secrets.fetched", {
-      tenantId,
-      phoneIdSuffix: secrets.WHATSAPP_PHONE_NUMBER_ID.slice(-6),
-    });
-
-    return secrets;
+    const secretId = this.resolveSecretId(secretName, prefix);
+    return this.fetchSecrets(secretId, { phoneNumberId });
   }
 
   /**
@@ -125,10 +82,13 @@ export class WhatsappService {
         len: text.length,
         preview: text.slice(0, 120),
       });
-      console.log("[WhatsappService] LOCAL_DRY_RUN active, skipping WhatsApp API call", {
-        to: toWaId,
-        preview: text.slice(0, 80),
-      });
+      console.log(
+        "[WhatsappService] LOCAL_DRY_RUN active, skipping WhatsApp API call",
+        {
+          to: toWaId,
+          preview: text.slice(0, 80),
+        }
+      );
       return;
     }
 
@@ -163,7 +123,7 @@ export class WhatsappService {
       httpStatus: response.status,
     });
   }
- 
+
   private resolveSecretId(secretName: string, prefix?: string): string {
     if (secretName.startsWith("arn:aws:secretsmanager")) {
       return secretName;
@@ -175,5 +135,38 @@ export class WhatsappService {
       ? prefix
       : prefix.replace(/[^:]+$/, "");
     return `${normalizedPrefix}${secretName}`;
+  }
+
+  private async fetchSecrets(
+    secretId: string,
+    ctx: { phoneNumberId?: string }
+  ): Promise<WhatsappSecrets> {
+    const client = new SecretsManagerClient({});
+    const res = await client.send(
+      new GetSecretValueCommand({ SecretId: secretId })
+    );
+
+    if (!res.SecretString) {
+      throw new Error("Empty secret value from Secrets Manager");
+    }
+
+    const parsed = JSON.parse(res.SecretString);
+
+    const secrets: WhatsappSecrets = {
+      WHATSAPP_ACCESS_TOKEN: parsed.WHATSAPP_ACCESS_TOKEN,
+      WHATSAPP_PHONE_NUMBER_ID: parsed.WHATSAPP_PHONE_NUMBER_ID,
+      VERIFY_TOKEN: parsed.VERIFY_TOKEN,
+    };
+
+    if (!secrets.WHATSAPP_ACCESS_TOKEN || !secrets.WHATSAPP_PHONE_NUMBER_ID) {
+      throw new Error("Missing required WhatsApp secret fields");
+    }
+
+    this.log.info("whatsapp.secrets.fetched", {
+      phoneNumberId: ctx.phoneNumberId,
+      phoneIdSuffix: secrets.WHATSAPP_PHONE_NUMBER_ID.slice(-6),
+    });
+
+    return secrets;
   }
 }

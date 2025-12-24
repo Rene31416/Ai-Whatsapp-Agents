@@ -10,6 +10,10 @@ import { SQSClient, SendMessageCommand } from "@aws-sdk/client-sqs";
 import { inject } from "inversify";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { TenantRepository } from "../services/tenant.repository";
+import {
+  PersistMessageEnvelope,
+  PersistMessageRole,
+} from "../types/persist-message";
 
 const sqs = new SQSClient({});
 
@@ -30,7 +34,10 @@ export class WhatsappController extends Controller {
     @queryParam("hub.challenge") challenge: string
   ) {
     console.log("🔍 Incoming webhook query:", { mode, token, challenge });
-    this.log.info("webhook.verify.received", { mode, hasChallenge: !!challenge });
+    this.log.info("webhook.verify.received", {
+      mode,
+      hasChallenge: !!challenge,
+    });
 
     const VERIFY_TOKEN = "test-handshake-token";
 
@@ -46,7 +53,6 @@ export class WhatsappController extends Controller {
   // 📬 POST /webhook — minimal validation + send message to SQS buffer
   @POST("/")
   async receiveWebhook(@body body: any) {
-    console.log("📩 Incoming webhook body:", JSON.stringify(body, null, 2));
     this.log.info("webhook.receive.incoming", {
       hasEntry: !!body?.entry?.length,
       changeTypes: body?.entry?.[0]?.changes?.map((c: any) => c?.field) ?? [],
@@ -84,10 +90,20 @@ export class WhatsappController extends Controller {
       const tenant = await this.tenantRepo.getByPhoneNumberId(phoneNumberId);
       if (!tenant) {
         console.warn("❌ Unknown phone number", { phoneNumberId });
-        return { statusCode: 403, body: { detail: "Phone number not registered" } };
+        return {
+          statusCode: 403,
+          body: { detail: "Phone number not registered" },
+        };
       }
 
       const nowIso = new Date().toISOString();
+      const whatsappMeta = {
+        timestamp: msg.timestamp ?? value?.timestamp,
+        type: msg.type,
+        profileName: value?.contacts?.[0]?.profile?.name,
+        phoneNumberId,
+      };
+
       const payload = {
         tenantId: tenant.tenantId,
         userId: from,
@@ -96,12 +112,7 @@ export class WhatsappController extends Controller {
         version: 1,
         flushedAt: nowIso,
         messageId,
-        whatsappMeta: {
-          timestamp: msg.timestamp ?? value?.timestamp,
-          type: msg.type,
-          profileName: value?.contacts?.[0]?.profile?.name,
-          phoneNumberId,
-        },
+        whatsappMeta,
       };
 
       console.log("📦 FIFO payload preview:", {
@@ -113,12 +124,32 @@ export class WhatsappController extends Controller {
 
       // ✅ Send to FIFO SQS (ChatIngressQueue.fifo)
       const queueUrl = process.env.CHAT_INGRESS_QUEUE_URL!;
+      const persistQueueUrl = process.env.CHAT_PERSIST_QUEUE_URL!;
+      const serializedPayload = JSON.stringify(payload);
       await sqs.send(
         new SendMessageCommand({
           QueueUrl: queueUrl,
-          MessageBody: JSON.stringify(payload),
+          MessageBody: serializedPayload,
           MessageGroupId: `${payload.tenantId}#${payload.userId}`,
           MessageDeduplicationId: messageId,
+        })
+      );
+
+      // 📚 Mirror raw inbound message to the persistence queue (standard SQS)
+      const persistPayload: PersistMessageEnvelope = {
+        tenantId: tenant.tenantId,
+        userId: from,
+        role: PersistMessageRole.USER,
+        messageBody: text,
+        messageId,
+        source: "webhook",
+        whatsappMeta,
+      };
+
+      await sqs.send(
+        new SendMessageCommand({
+          QueueUrl: persistQueueUrl,
+          MessageBody: JSON.stringify(persistPayload),
         })
       );
 

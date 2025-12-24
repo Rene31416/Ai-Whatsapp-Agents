@@ -262,8 +262,16 @@ export class ChatService {
   }
 
   private async sendWhatsApp(job: ChatJob, reply: string): Promise<boolean> {
+    const phoneNumberId = job.whatsappMeta?.phoneNumberId;
+    if (!phoneNumberId) {
+      this.log.error("chat.whatsapp.missing_phone_id", {
+        tenantId: job.tenantId,
+        userId: job.userId,
+      });
+      return false;
+    }
     try {
-      const secrets = await this.whatsapp.getSecrets(job.tenantId);
+      const secrets = await this.whatsapp.getSecretsByPhoneNumberId(phoneNumberId);
       await this.whatsapp.sendText(job.userId, reply, secrets);
       this.log.info("chat.whatsapp.sent", { to: job.userId, len: reply.length });
       return true;
