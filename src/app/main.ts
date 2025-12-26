@@ -1,7 +1,7 @@
 import "reflect-metadata";
 import { ApiLambdaApp, AppConfig } from "ts-lambda-api";
 import * as path from "path";
-import { container } from "./container";
+import { webhookContainer } from "./containers/webhook.container";
 import type { ApiRequest } from "ts-lambda-api";
 import "../controller/chat.controller";
 import "../controller/clinic.controller";
@@ -11,7 +11,7 @@ const appConfig = new AppConfig();
 const controllersPath = [path.join(__dirname, "../controller")];
 
 // 🧩 2. Initialize the same ApiLambdaApp locally
-const app = new ApiLambdaApp(controllersPath, appConfig, false, container);
+const app = new ApiLambdaApp(controllersPath, appConfig, false, webhookContainer);
 
 // 🧠 3. Local interactive test session
 async function main() {

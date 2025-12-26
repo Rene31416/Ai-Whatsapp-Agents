@@ -11,12 +11,15 @@ import "reflect-metadata";
 import { createInterface } from "node:readline";
 import { handler } from "../app/lambda-handlers/chatService";
 import { SQSEvent, SQSRecord } from "aws-lambda";
-import { container } from "../app/container";
+import { Logger } from "@aws-lambda-powertools/logger";
 import { TenantRepository } from "../services/tenant.repository";
 
 // Tenant/user to simulate in this session
 let TENANT_ID = "";
 const USER_ID = process.env.LOCAL_USER_ID || "local-user";
+const tenantRepo = new TenantRepository(
+  new Logger({ serviceName: "local-repl" })
+);
 
 // Region for AWS SDK v3
 process.env.AWS_REGION ||= "us-east-1";
@@ -132,8 +135,7 @@ async function resolveTenantId(): Promise<string> {
   }
 
   try {
-    const repo = container.get(TenantRepository);
-    const tenant = await repo.getByPhoneNumberId(phoneId);
+    const tenant = await tenantRepo.getByPhoneNumberId(phoneId);
     if (!tenant) {
       throw new Error(`No tenant found for phoneNumberId=${phoneId}`);
     }
