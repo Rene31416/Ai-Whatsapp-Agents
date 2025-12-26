@@ -238,21 +238,23 @@ export class AiAgentsStack extends cdk.Stack {
       }
     );
 
-    // Appointments Lambda
-    const appointmentsLambda = new lambda.Function(this, "AppointmentsLambda", {
+    // Clinic Lambda (appointments + clinic APIs)
+    const clinicLambda = new lambda.Function(this, "ClinicLambda", {
       runtime: lambda.Runtime.NODEJS_20_X,
       architecture: lambda.Architecture.ARM_64,
-      handler: "appointments.handler",
+      handler: "clinic.handler",
       code: lambda.Code.fromAsset(path.join(__dirname, "../dist")),
       timeout: cdk.Duration.seconds(60),
       memorySize: 512,
       environment: {
-        SERVICE_NAME: "appointments-lambda",
+        SERVICE_NAME: "clinic-lambda",
         APPOINTMENTS_TABLE_NAME: appointmentsTable.tableName,
         APPOINTMENTS_GSI_USER: "UserAppointmentsIndex",
         APPOINTMENTS_GSI_DOCTOR: "DoctorScheduleIndex",
         APPOINTMENTS_GSI_STATUS: "StatusIndex",
         DOCTORS_TABLE_NAME: doctorsTable.tableName,
+        TENANT_TABLE_NAME: tenantTable.tableName,
+        TENANT_GSI_PHONE: "PhoneNumberIdIndex",
       },
     });
 
@@ -308,8 +310,10 @@ export class AiAgentsStack extends cdk.Stack {
       })
     );
 
-    //appointments api
-    appointmentsTable.grantReadWriteData(appointmentsLambda);
+    // Clinic lambda data access
+    appointmentsTable.grantReadWriteData(clinicLambda);
+    tenantTable.grantReadData(clinicLambda);
+    doctorsTable.grantReadData(clinicLambda);
 
     // =========================================================================
     // API Gateway
@@ -325,7 +329,6 @@ export class AiAgentsStack extends cdk.Stack {
     const webhookIntegration = new apigateway.LambdaIntegration(webhookLambda);
     webhook.addMethod("GET", webhookIntegration);
     webhook.addMethod("POST", webhookIntegration);
-    clinic.addMethod("GET", webhookIntegration);
 
     const appointmentsResource = api.root.addResource("appointments");
     const appointmentIdResource =
@@ -334,20 +337,18 @@ export class AiAgentsStack extends cdk.Stack {
       appointmentsResource.addResource("availability");
     const doctorResources = clinic.addResource("doctors");
 
-    const appointmentsIntegration = new apigateway.LambdaIntegration(
-      appointmentsLambda
-    );
+    const clinicIntegration = new apigateway.LambdaIntegration(clinicLambda);
 
-    appointmentsResource.addMethod("POST", appointmentsIntegration);
-    appointmentsResource.addMethod("PATCH", appointmentsIntegration);
-    appointmentsResource.addMethod("DELETE", appointmentsIntegration);
-    appointmentIdResource.addMethod("PATCH", appointmentsIntegration);
-    appointmentIdResource.addMethod("DELETE", appointmentsIntegration);
-    availabilityResource.addMethod("GET", appointmentsIntegration);
+    appointmentsResource.addMethod("POST", clinicIntegration);
+    appointmentsResource.addMethod("PATCH", clinicIntegration);
+    appointmentsResource.addMethod("DELETE", clinicIntegration);
+    appointmentIdResource.addMethod("PATCH", clinicIntegration);
+    appointmentIdResource.addMethod("DELETE", clinicIntegration);
+    availabilityResource.addMethod("GET", clinicIntegration);
 
-    // TO-do -> Remove webhook lambda form clinic integration
-    // TO-do -> improve error response from clinics api
-    doctorResources.addMethod("GET", webhookIntegration);
+    // Clinic endpoints now routed through clinic lambda
+    clinic.addMethod("GET", clinicIntegration);
+    doctorResources.addMethod("GET", clinicIntegration);
 
     // =========================================================================
     // Cross-resource wiring
