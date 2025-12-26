@@ -1,13 +1,13 @@
 import "reflect-metadata";
 import { SQSEvent, SQSRecord } from "aws-lambda";
-import { container } from "../container";
+import { deliverMessagesContainer } from "../containers/deliver-messages.container";
 import { Logger } from "@aws-lambda-powertools/logger";
 
 import { WhatsappService } from "../../services/whatsapp.service";
 import { DeliverMessageEnvelope } from "../../types/deliver-message";
 
-const whatsappService = container.get(WhatsappService);
-const logger = container.get(Logger);
+const whatsappService = deliverMessagesContainer.get(WhatsappService);
+const logger = deliverMessagesContainer.get(Logger);
 
 export const handler = async (event: SQSEvent): Promise<void> => {
   logger.info("deliverMessages.batch.start", {

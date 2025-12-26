@@ -1,6 +1,6 @@
 import "reflect-metadata";
 import { SQSEvent, SQSRecord } from "aws-lambda";
-import { container } from "../container";
+import { persistMessagesContainer } from "../containers/persist-messages.container";
 import { Logger } from "@aws-lambda-powertools/logger";
 
 import { ChatRepository } from "../../chat/chat.repository";
@@ -9,8 +9,8 @@ import {
   PersistMessageRole,
 } from "../../types/persist-message";
 
-const chatRepository = container.get(ChatRepository);
-const logger = container.get(Logger);
+const chatRepository = persistMessagesContainer.get(ChatRepository);
+const logger = persistMessagesContainer.get(Logger);
 
 export const handler = async (event: SQSEvent): Promise<void> => {
   logger.info("persistMessages.batch.start", {

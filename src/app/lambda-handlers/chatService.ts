@@ -1,13 +1,13 @@
 // src/lambda/handlers/chat.handler.ts
 import "reflect-metadata";
 import { SQSEvent } from "aws-lambda";
-import { container } from "../container";
+import { chatServiceContainer } from "../containers/chat-service.container";
 import { Logger } from "@aws-lambda-powertools/logger";
 import { ChatService } from "../../services/chat.service";
 
 // 🧩 Resolve dependencies
-const chatService = container.get(ChatService);
-const logger = container.get(Logger);
+const chatService = chatServiceContainer.get(ChatService);
+const logger = chatServiceContainer.get(Logger);
 
 // ✅ AWS Lambda entrypoint
 export const handler = async (event: SQSEvent): Promise<void> => {
