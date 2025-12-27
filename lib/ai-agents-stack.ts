@@ -258,6 +258,9 @@ export class AiAgentsStack extends cdk.Stack {
       },
     });
 
+    chatServiceLambda.addEnvironment("CLINIC_LAMBDA_NAME", clinicLambda.functionName);
+    clinicLambda.grantInvoke(chatServiceLambda);
+
     // =========================================================================
     // Event Sources (SQS -> Lambda)
     // =========================================================================
